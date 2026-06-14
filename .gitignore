@@ -1,0 +1,23 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.openpilot-agent/
+.env
+.env.*
+
+# Rust
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent workspace data
+.agent/

@@ -1,0 +1,12 @@
+---
+source: crates/opca-core/tests/lifecycle_heartbeat.rs
+assertion_line: 138
+expression: hb
+---
+{
+  "task_id": "task-delta",
+  "status": "waiting",
+  "progress": 0.5,
+  "summary": "needs clarification on auth flow",
+  "timestamp": 1000
+}

@@ -1,0 +1,5 @@
+---
+source: crates/opca-core/tests/focus_prompt.rs
+expression: prompt
+---
+

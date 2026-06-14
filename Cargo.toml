@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/opca-core",
+    "crates/opca-cli",
+    "crates/opca-test-utils",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/vhyc/openpilot-agent"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+# Allow some overly pedantic lints
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+return_self_not_must_use = "allow"
+needless_pass_by_value = "allow"
+significant_drop_tightening = "allow"
+case_sensitive_file_extension_comparisons = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+match_same_arms = "allow"
+option_if_let_else = "allow"
+collapsible_if = "allow"
+cast_precision_loss = "allow"
+unused_async = "allow"
+await_holding_lock = "allow"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-trait = "0.1"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# HTTP (for providers)
+reqwest = { version = "0.12", features = ["json", "stream"] }
+eventsource-stream = "0.2"
+
+# Git
+git2 = { version = "0.19", default-features = false }
+
+# SQLite
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Line editing
+reedline = "0.39"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+tui-textarea = "0.7"
+
+# Misc
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Internal crates (for path dependencies)
+opca-core = { path = "crates/opca-core" }
+opca-test-utils = { path = "crates/opca-test-utils" }
+
+# Test dependencies
+rstest = "0.23"
+proptest = "1"
+insta = { version = "1", features = ["json"] }
+mockall = "0.13"
+tempfile = "3"
+wiremock = "0.6"
+tokio-test = "0.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

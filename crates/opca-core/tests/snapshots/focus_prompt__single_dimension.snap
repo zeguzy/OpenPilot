@@ -1,0 +1,8 @@
+---
+source: crates/opca-core/tests/focus_prompt.rs
+expression: prompt
+---
+You have a reporting tool `report_highlight`. You must monitor and report findings on these dimensions:
+  - [security risks]
+
+When calling report_highlight, the `tag` field MUST match one of the dimensions above.

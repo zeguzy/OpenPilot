@@ -1,0 +1,12 @@
+---
+source: crates/opca-core/tests/lifecycle_heartbeat.rs
+assertion_line: 114
+expression: hb
+---
+{
+  "task_id": "task-beta",
+  "status": "delivered",
+  "progress": 1.0,
+  "summary": "refactored auth module",
+  "timestamp": 1700000000
+}

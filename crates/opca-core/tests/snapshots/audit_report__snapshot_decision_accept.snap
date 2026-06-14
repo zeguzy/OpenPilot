@@ -1,0 +1,14 @@
+---
+source: crates/opca-core/tests/audit_report.rs
+assertion_line: 69
+expression: decision
+---
+{
+  "report": {
+    "task_id": "task-decision-accept",
+    "verdict": "pass",
+    "confidence": 0.9,
+    "findings": [],
+    "summary": "Clean"
+  }
+}

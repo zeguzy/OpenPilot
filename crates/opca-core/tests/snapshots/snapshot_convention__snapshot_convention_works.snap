@@ -1,0 +1,10 @@
+---
+source: crates/opca-core/tests/snapshot_convention.rs
+expression: sample
+---
+{
+  "progress": 0.6,
+  "status": "on-it",
+  "summary": "rewriting token_validator.rs",
+  "task": "refactor auth"
+}

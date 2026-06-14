@@ -1,0 +1,94 @@
+[package]
+name = "opca-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+eventsource-stream = { workspace = true }
+git2 = { workspace = true }
+rusqlite = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+opca-test-utils = { workspace = true }
+rstest = { workspace = true }
+proptest = { workspace = true }
+insta = { workspace = true }
+mockall = { workspace = true }
+tempfile = { workspace = true }
+tokio-test = { workspace = true }
+
+# E2E integration tests (Task 17.x). Each file lives under tests/e2e/ and is
+# its own test binary. All tests inside are #[ignore] by default — run with
+# `cargo test -- --ignored`.
+[[test]]
+name = "e2e_git_lifecycle"
+path = "tests/e2e/e2e_git_lifecycle.rs"
+
+[[test]]
+name = "e2e_mirror_lifecycle"
+path = "tests/e2e/e2e_mirror_lifecycle.rs"
+
+[[test]]
+name = "e2e_parallel_tasks"
+path = "tests/e2e/e2e_parallel_tasks.rs"
+
+[[test]]
+name = "e2e_audit_flow"
+path = "tests/e2e/e2e_audit_flow.rs"
+
+[[test]]
+name = "e2e_focus_update"
+path = "tests/e2e/e2e_focus_update.rs"
+
+[[test]]
+name = "e2e_cold_store_recall"
+path = "tests/e2e/e2e_cold_store_recall.rs"
+
+[[test]]
+name = "e2e_mcp_tool"
+path = "tests/e2e/e2e_mcp_tool.rs"
+
+[[test]]
+name = "e2e_plugin_install"
+path = "tests/e2e/e2e_plugin_install.rs"
+
+[[test]]
+name = "e2e_hook_block"
+path = "tests/e2e/e2e_hook_block.rs"
+
+[[test]]
+name = "e2e_panic_recovery"
+path = "tests/e2e/e2e_panic_recovery.rs"
+
+# Benchmarks (Task 18.5). `harness = false` so each bench is a plain binary
+# using `std::time::Instant` — no nightly-only `#[bench]` and no extra
+# criterion dependency.
+[[bench]]
+name = "context_build"
+harness = false
+
+[[bench]]
+name = "workspace_create"
+harness = false
+
+[[bench]]
+name = "memory_recall"
+harness = false
+
+[lints]
+workspace = true

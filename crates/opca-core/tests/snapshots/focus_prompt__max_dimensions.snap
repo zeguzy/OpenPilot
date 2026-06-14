@@ -1,0 +1,15 @@
+---
+source: crates/opca-core/tests/focus_prompt.rs
+expression: prompt
+---
+You have a reporting tool `report_highlight`. You must monitor and report findings on these dimensions:
+  - [security risks]
+  - [breaking changes]
+  - [performance]
+  - [correctness]
+  - [test coverage]
+  - [code style]
+  - [dependencies]
+  - [error handling]
+
+When calling report_highlight, the `tag` field MUST match one of the dimensions above.

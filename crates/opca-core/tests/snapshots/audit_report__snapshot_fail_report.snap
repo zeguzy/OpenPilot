@@ -1,0 +1,23 @@
+---
+source: crates/opca-core/tests/audit_report.rs
+assertion_line: 56
+expression: report
+---
+{
+  "task_id": "task-fail-003",
+  "verdict": "fail",
+  "confidence": 0.2,
+  "findings": [
+    {
+      "severity": "blocking",
+      "location": "src/crypto.rs:10",
+      "issue": "Hardcoded secret key in source"
+    },
+    {
+      "severity": "warning",
+      "location": "src/crypto.rs:25",
+      "issue": "Weak hash algorithm (MD5)"
+    }
+  ],
+  "summary": "Critical security vulnerabilities detected"
+}

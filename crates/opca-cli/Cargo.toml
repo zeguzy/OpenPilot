@@ -1,0 +1,31 @@
+[package]
+name = "opca-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+opca-core = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+reedline = { workspace = true }
+ratatui = { workspace = true }
+crossterm = { workspace = true }
+tui-textarea = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+opca-test-utils = { workspace = true }
+rstest = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

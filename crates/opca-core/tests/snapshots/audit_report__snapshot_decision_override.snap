@@ -1,0 +1,22 @@
+---
+source: crates/opca-core/tests/audit_report.rs
+assertion_line: 90
+expression: decision
+---
+{
+  "report": {
+    "task_id": "task-decision-override",
+    "verdict": "fail",
+    "confidence": 0.3,
+    "findings": [
+      {
+        "severity": "blocking",
+        "location": "tests/integration.rs:100",
+        "issue": "3 tests failed"
+      }
+    ],
+    "summary": "Tests are failing"
+  },
+  "override_verdict": "pass",
+  "override_reason": "tests were pre-existing failures, not caused by this task"
+}

@@ -1,0 +1,12 @@
+---
+source: crates/opca-core/tests/lifecycle_heartbeat.rs
+assertion_line: 102
+expression: hb
+---
+{
+  "task_id": "task-alpha",
+  "status": "on-it",
+  "progress": 0.0,
+  "summary": "starting execution",
+  "timestamp": 0
+}

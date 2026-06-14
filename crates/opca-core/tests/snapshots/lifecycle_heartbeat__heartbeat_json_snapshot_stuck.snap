@@ -1,0 +1,12 @@
+---
+source: crates/opca-core/tests/lifecycle_heartbeat.rs
+assertion_line: 126
+expression: hb
+---
+{
+  "task_id": "task-gamma",
+  "status": "stuck",
+  "progress": 0.42,
+  "summary": "blocked on API rate limit",
+  "timestamp": 1699999999
+}
