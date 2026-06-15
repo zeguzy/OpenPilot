@@ -12,7 +12,7 @@ use opca_test_utils::ScriptedProvider;
 
 fn pass_report_json() -> String {
     serde_json::json!({
-        "verdict": "pass",
+        "verdict": "confirmed",
         "confidence": 0.95,
         "findings": [],
         "summary": "all checks passed"
@@ -22,7 +22,7 @@ fn pass_report_json() -> String {
 
 fn fail_report_json() -> String {
     serde_json::json!({
-        "verdict": "fail",
+        "verdict": "needs_fix",
         "confidence": 0.85,
         "findings": [
             {
@@ -63,13 +63,13 @@ async fn e2e_audit_pass_verdict_accepted() {
 
     let report = agent.audit().await.expect("audit");
 
-    assert_eq!(report.verdict, AuditVerdict::Pass);
+    assert_eq!(report.verdict, AuditVerdict::Confirmed);
     assert!(report.confidence > 0.9);
     assert!(report.findings.is_empty());
 
     let decision = AuditDecision::accept(report);
     assert!(!decision.was_overridden());
-    assert_eq!(decision.effective_verdict(), AuditVerdict::Pass);
+    assert_eq!(decision.effective_verdict(), AuditVerdict::Confirmed);
 }
 
 #[tokio::test]
@@ -99,17 +99,17 @@ async fn e2e_audit_fail_verdict_overridden() {
 
     let report = agent.audit().await.expect("audit");
 
-    assert_eq!(report.verdict, AuditVerdict::Fail);
+    assert_eq!(report.verdict, AuditVerdict::NeedsFix);
     assert_eq!(report.findings.len(), 1);
 
     let decision = AuditDecision::override_to(
         report,
-        AuditVerdict::Warn,
+        AuditVerdict::FalsePositive,
         "false positive: auth check moved to middleware",
     );
 
     assert!(decision.was_overridden());
-    assert_eq!(decision.effective_verdict(), AuditVerdict::Warn);
+    assert_eq!(decision.effective_verdict(), AuditVerdict::FalsePositive);
     assert_eq!(
         decision.override_reason.as_deref(),
         Some("false positive: auth check moved to middleware")

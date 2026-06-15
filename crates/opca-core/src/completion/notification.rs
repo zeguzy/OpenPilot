@@ -25,10 +25,10 @@ pub enum NotificationLevel {
 /// Audit verdict.
 ///
 /// Rules (mirrors `design.md` §D9):
-/// - Low risk, no audit or audit pass → `Silent` (auto-merged).
+/// - Low risk, no audit or audit confirmed → `Silent` (auto-merged).
 /// - High risk regardless of audit → `PendingReview`.
-/// - Medium risk with fail/warn audit → `PendingReview`.
-/// - Medium risk with pass audit (or no audit) → `Silent`.
+/// - Medium risk with any non-confirmed verdict → `PendingReview`.
+/// - Medium risk with confirmed audit (or no audit) → `Silent`.
 #[must_use]
 pub const fn notification_level(
     risk: RiskLevel,
@@ -36,9 +36,14 @@ pub const fn notification_level(
 ) -> NotificationLevel {
     match (risk, verdict) {
         (RiskLevel::High, _) => NotificationLevel::PendingReview,
-        (RiskLevel::Medium, Some(AuditVerdict::Fail | AuditVerdict::Warn)) => {
-            NotificationLevel::PendingReview
-        }
+        (
+            RiskLevel::Medium,
+            Some(
+                AuditVerdict::FalsePositive
+                | AuditVerdict::NeedsFix
+                | AuditVerdict::NeedsHumanReview,
+            ),
+        ) => NotificationLevel::PendingReview,
         (RiskLevel::Medium | RiskLevel::Low, _) => NotificationLevel::Silent,
     }
 }
@@ -54,7 +59,7 @@ mod tests {
             NotificationLevel::Silent
         );
         assert_eq!(
-            notification_level(RiskLevel::Low, Some(AuditVerdict::Fail)),
+            notification_level(RiskLevel::Low, Some(AuditVerdict::NeedsFix)),
             NotificationLevel::Silent
         );
     }
@@ -66,15 +71,15 @@ mod tests {
             NotificationLevel::PendingReview
         );
         assert_eq!(
-            notification_level(RiskLevel::High, Some(AuditVerdict::Pass)),
+            notification_level(RiskLevel::High, Some(AuditVerdict::Confirmed)),
             NotificationLevel::PendingReview
         );
     }
 
     #[test]
-    fn medium_pass_silent() {
+    fn medium_confirmed_silent() {
         assert_eq!(
-            notification_level(RiskLevel::Medium, Some(AuditVerdict::Pass)),
+            notification_level(RiskLevel::Medium, Some(AuditVerdict::Confirmed)),
             NotificationLevel::Silent
         );
         assert_eq!(
@@ -84,13 +89,17 @@ mod tests {
     }
 
     #[test]
-    fn medium_warn_or_fail_pending_review() {
+    fn medium_non_confirmed_pending_review() {
         assert_eq!(
-            notification_level(RiskLevel::Medium, Some(AuditVerdict::Warn)),
+            notification_level(RiskLevel::Medium, Some(AuditVerdict::FalsePositive)),
             NotificationLevel::PendingReview
         );
         assert_eq!(
-            notification_level(RiskLevel::Medium, Some(AuditVerdict::Fail)),
+            notification_level(RiskLevel::Medium, Some(AuditVerdict::NeedsFix)),
+            NotificationLevel::PendingReview
+        );
+        assert_eq!(
+            notification_level(RiskLevel::Medium, Some(AuditVerdict::NeedsHumanReview)),
             NotificationLevel::PendingReview
         );
     }

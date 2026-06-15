@@ -86,6 +86,7 @@ async fn e2e_two_parallel_tasks_non_overlapping() {
             "task A: update docs",
             vec![],
             vec![std::path::PathBuf::from("docs.md")],
+            None,
         )
         .await
         .expect("dispatch A");
@@ -96,6 +97,7 @@ async fn e2e_two_parallel_tasks_non_overlapping() {
             "task B: update config",
             vec![],
             vec![std::path::PathBuf::from("config.md")],
+            None,
         )
         .await
         .expect("dispatch B");

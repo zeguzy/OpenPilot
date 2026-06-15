@@ -5,6 +5,7 @@ use anyhow::Result;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
+use crate::continuation::{ContinuationCoordinator, DefaultContinuationPolicy};
 use crate::di::{Clock, FileSystem, Process};
 use crate::focus::{FocusContract, FocusUpdate, Highlight};
 use crate::lifecycle::{Heartbeat, TaskStatus};
@@ -33,6 +34,7 @@ pub struct Orchestrator {
     output_rx: UnboundedReceiver<(String, crate::task::TaskOutput)>,
     prefetch_cache: Arc<Mutex<Vec<OrchestratorEvent>>>,
     task_counter: u64,
+    continuation: ContinuationCoordinator,
 }
 
 impl Orchestrator {
@@ -66,6 +68,7 @@ impl Orchestrator {
             output_rx,
             prefetch_cache: Arc::new(Mutex::new(Vec::new())),
             task_counter: 0,
+            continuation: ContinuationCoordinator::new(Box::new(DefaultContinuationPolicy), 0.5),
         }
     }
 
@@ -109,6 +112,14 @@ impl Orchestrator {
         self.prefetch_cache.lock().expect("poisoned").clone()
     }
 
+    /// Returns the provider Arc so callers (e.g. the completion pipeline's
+    /// review stage) can construct an `AuditAgent` without an extra provider
+    /// parameter on every call site.
+    #[must_use]
+    pub fn provider(&self) -> Arc<dyn Provider> {
+        self.provider.clone()
+    }
+
     pub fn heartbeat_sender(&self) -> UnboundedSender<(String, Heartbeat)> {
         self.heartbeat_tx.clone()
     }
@@ -117,12 +128,13 @@ impl Orchestrator {
         self.highlight_tx.clone()
     }
 
-    #[allow(clippy::unused_async)]
+    #[allow(clippy::unused_async, clippy::too_many_arguments)]
     pub async fn dispatch_task(
         &mut self,
         description: &str,
         focus: Vec<String>,
         estimated_files: Vec<PathBuf>,
+        _parent_task_id: Option<String>,
     ) -> Result<String> {
         let task_id = self.next_task_id();
         let focus_contract = FocusContract::new(focus);
@@ -142,6 +154,7 @@ impl Orchestrator {
                 context_snapshot,
                 dispatched: false,
                 join_handle: None,
+                parent_task_id: None,
             });
             return Ok(task_id);
         }
@@ -214,6 +227,7 @@ impl Orchestrator {
             context_snapshot,
             dispatched: true,
             join_handle: Some(join_handle),
+            parent_task_id: None,
         });
 
         Ok(task_id)
@@ -356,6 +370,33 @@ impl Orchestrator {
             .map_err(|_| anyhow::anyhow!("steering channel closed for task {task_id}"))?;
         Ok(())
     }
+
+    #[must_use]
+    pub const fn continuation(&self) -> &ContinuationCoordinator {
+        &self.continuation
+    }
+
+    pub const fn continuation_mut(&mut self) -> &mut ContinuationCoordinator {
+        &mut self.continuation
+    }
+
+    /// Evaluates a completed task for continuation. Called after the completion
+    /// pipeline returns. Returns a [`DispatchRequest`](crate::continuation::DispatchRequest)
+    /// if a continuation iteration should be dispatched.
+    pub fn evaluate_continuation(
+        &mut self,
+        task_id: &str,
+        audit_verdict: Option<crate::audit::AuditVerdict>,
+        audit_confidence: f64,
+        audit_findings: &[crate::audit::Finding],
+    ) -> Option<crate::continuation::DispatchRequest> {
+        self.continuation.evaluate(
+            task_id,
+            audit_verdict.as_ref(),
+            audit_confidence,
+            audit_findings,
+        )
+    }
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -368,6 +409,10 @@ impl std::fmt::Debug for Orchestrator {
             .field("prefetch_cache_len", &{
                 let cache = self.prefetch_cache.lock().expect("poisoned");
                 cache.len()
+            })
+            .field("active_chains", &{
+                let c = &self.continuation;
+                c.list_active_chains().len()
             })
             .finish()
     }

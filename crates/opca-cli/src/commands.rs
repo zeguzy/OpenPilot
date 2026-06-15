@@ -1,7 +1,7 @@
 use crate::Reply;
 use opca_core::orchestrator::route;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SlashCommand {
     Accept {
         task_id: String,
@@ -16,6 +16,38 @@ pub enum SlashCommand {
     },
     Help,
     Quit,
+    /// `/continue <prompt>` starts a continuation chain.
+    ///
+    /// `/continue status [chain-id]` shows the status of one or all chains.
+    Continue {
+        action: ContinueAction,
+    },
+    /// `/stop-continuation <chain-id>` or `/stop-continuation all`.
+    StopContinuation {
+        target: StopTarget,
+    },
+}
+
+/// What a `/continue` invocation should do.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ContinueAction {
+    /// Start a new chain with the given prompt and optional budget overrides.
+    Start {
+        prompt: String,
+        max_iterations: Option<u32>,
+        budget: Option<f64>,
+    },
+    /// Report status of one chain (`Some`) or every active chain (`None`).
+    Status { chain_id: Option<String> },
+}
+
+/// Target of a `/stop-continuation` invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopTarget {
+    /// Stop every active chain.
+    All,
+    /// Stop a single chain by its ID.
+    One(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -26,6 +58,10 @@ pub enum SlashError {
     MissingTaskId(&'static str),
     #[error("malformed command: {0}")]
     Malformed(String),
+    #[error("missing prompt for /{0}")]
+    MissingPrompt(&'static str),
+    #[error("missing chain id for /{0}")]
+    MissingChainId(&'static str),
 }
 
 impl SlashCommand {
@@ -56,6 +92,12 @@ impl SlashCommand {
             },
             "help" | "?" => Self::Help,
             "quit" | "exit" | "q" => Self::Quit,
+            "continue" | "continuation" => Self::Continue {
+                action: parse_continue(rest)?,
+            },
+            "stop-continuation" | "stop-continue" => Self::StopContinuation {
+                target: parse_stop_continuation(rest)?,
+            },
             other => return Err(SlashError::Unknown(other.to_string())),
         };
         Ok(Some(command))
@@ -83,6 +125,71 @@ fn parse_feedback(rest: &str) -> Option<String> {
     }
 }
 
+fn parse_continue(rest: &str) -> Result<ContinueAction, SlashError> {
+    if rest.is_empty() {
+        return Err(SlashError::MissingPrompt("continue"));
+    }
+    if let Some(chain_id) = rest.strip_prefix("status") {
+        let trimmed = chain_id.trim();
+        return Ok(ContinueAction::Status {
+            chain_id: if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            },
+        });
+    }
+
+    let mut max_iterations: Option<u32> = None;
+    let mut budget: Option<f64> = None;
+    let mut prompt_parts: Vec<&str> = Vec::new();
+
+    let mut tokens = rest.split_whitespace();
+    while let Some(tok) = tokens.next() {
+        match tok {
+            "--max-iterations" | "-i" => {
+                let raw = tokens.next().ok_or_else(|| {
+                    SlashError::Malformed("--max-iterations needs a value".into())
+                })?;
+                max_iterations = Some(raw.parse::<u32>().map_err(|_| {
+                    SlashError::Malformed(format!("invalid --max-iterations value '{raw}'"))
+                })?);
+            }
+            "--budget" | "-b" => {
+                let raw = tokens
+                    .next()
+                    .ok_or_else(|| SlashError::Malformed("--budget needs a value".into()))?;
+                budget = Some(raw.parse::<f64>().map_err(|_| {
+                    SlashError::Malformed(format!("invalid --budget value '{raw}'"))
+                })?);
+            }
+            other => prompt_parts.push(other),
+        }
+    }
+
+    if prompt_parts.is_empty() {
+        return Err(SlashError::MissingPrompt("continue"));
+    }
+    let prompt = prompt_parts.join(" ");
+    Ok(ContinueAction::Start {
+        prompt,
+        max_iterations,
+        budget,
+    })
+}
+
+fn parse_stop_continuation(rest: &str) -> Result<StopTarget, SlashError> {
+    let target = rest
+        .split_whitespace()
+        .next()
+        .ok_or(SlashError::MissingChainId("stop-continuation"))?;
+    Ok(if target.eq_ignore_ascii_case("all") {
+        StopTarget::All
+    } else {
+        StopTarget::One(target.to_string())
+    })
+}
+
 #[must_use]
 pub fn route_message(message: &str) -> Reply {
     let _ = route(message, "");
@@ -95,6 +202,11 @@ Slash commands:
   /reject <task-id> [\"msg\"]    Reject a task; with feedback, returns it to OnIt
   /tasks                       List all active tasks
   /status [task-id]            Show task status (omit id for overview)
+  /continue <prompt>           Start a continuation chain (auto-iterate until Audit confirms)
+  /continue status [chain-id]  Show continuation chain status
+  /continue [-i N] [-b USD] <prompt>  Start with budget overrides
+  /stop-continuation <chain-id>  Terminate one continuation chain
+  /stop-continuation all         Terminate every active continuation chain
   /help, /?                    Show this help
   /quit, /exit                 Exit the REPL
 

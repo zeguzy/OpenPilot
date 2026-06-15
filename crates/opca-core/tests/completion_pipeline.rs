@@ -497,18 +497,18 @@ fn notification_level_matrix() {
         (RiskLevel::Low, None, NotificationLevel::Silent),
         (
             RiskLevel::Low,
-            Some(AuditVerdict::Fail),
+            Some(AuditVerdict::NeedsFix),
             NotificationLevel::Silent,
         ),
         (RiskLevel::Medium, None, NotificationLevel::Silent),
         (
             RiskLevel::Medium,
-            Some(AuditVerdict::Warn),
+            Some(AuditVerdict::FalsePositive),
             NotificationLevel::PendingReview,
         ),
         (
             RiskLevel::Medium,
-            Some(AuditVerdict::Fail),
+            Some(AuditVerdict::NeedsFix),
             NotificationLevel::PendingReview,
         ),
         (RiskLevel::High, None, NotificationLevel::PendingReview),

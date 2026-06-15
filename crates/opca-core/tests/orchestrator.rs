@@ -140,7 +140,7 @@ async fn dispatch_task_stores_focus_dimensions() {
         "tradeoff decisions".to_string(),
     ];
     let task_id = orch
-        .dispatch_task("refactor auth", focus.clone(), vec![])
+        .dispatch_task("refactor auth", focus.clone(), vec![], None)
         .await
         .expect("dispatch");
 
@@ -162,11 +162,11 @@ async fn dispatch_task_returns_unique_ids() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let id1 = orch
-        .dispatch_task("task one", vec![], vec![])
+        .dispatch_task("task one", vec![], vec![], None)
         .await
         .unwrap();
     let id2 = orch
-        .dispatch_task("task two", vec![], vec![])
+        .dispatch_task("task two", vec![], vec![], None)
         .await
         .unwrap();
 
@@ -181,7 +181,10 @@ async fn dispatch_task_registers_in_registry() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     assert_eq!(orch.task_count(), 0);
-    let _id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let _id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     assert_eq!(orch.task_count(), 1);
 }
 
@@ -192,7 +195,10 @@ async fn dispatch_task_is_marked_dispatched() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     assert!(orch.is_dispatched(&task_id));
 }
 
@@ -205,7 +211,10 @@ async fn heartbeat_updates_registry() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     wait_for_heartbeat(&mut orch, &task_id, 3000).await;
 
     let hb = orch
@@ -223,7 +232,10 @@ async fn heartbeat_simulated_updates_registry() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
 
     let hb = make_heartbeat(&task_id, TaskStatus::OnIt, 0.5);
     orch.heartbeat_sender().send((task_id.clone(), hb)).unwrap();
@@ -242,7 +254,10 @@ async fn latest_heartbeat_reflects_most_recent() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
 
     orch.heartbeat_sender()
         .send((
@@ -286,7 +301,10 @@ async fn deep_dive_returns_filtered_messages() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     orch.set_context_snapshot(
         &task_id,
         vec![
@@ -309,7 +327,10 @@ async fn deep_dive_empty_query_returns_all() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     orch.set_context_snapshot(
         &task_id,
         vec![
@@ -534,7 +555,12 @@ async fn non_overlapping_tasks_both_dispatched() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let id_a = orch
-        .dispatch_task("refactor auth", vec![], vec![PathBuf::from("src/auth.rs")])
+        .dispatch_task(
+            "refactor auth",
+            vec![],
+            vec![PathBuf::from("src/auth.rs")],
+            None,
+        )
         .await
         .unwrap();
     let id_b = orch
@@ -542,6 +568,7 @@ async fn non_overlapping_tasks_both_dispatched() {
             "refactor utils",
             vec![],
             vec![PathBuf::from("src/utils.rs")],
+            None,
         )
         .await
         .unwrap();
@@ -557,11 +584,21 @@ async fn overlapping_tasks_second_queued() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let id_a = orch
-        .dispatch_task("refactor auth", vec![], vec![PathBuf::from("src/auth.rs")])
+        .dispatch_task(
+            "refactor auth",
+            vec![],
+            vec![PathBuf::from("src/auth.rs")],
+            None,
+        )
         .await
         .unwrap();
     let id_c = orch
-        .dispatch_task("fix auth bug", vec![], vec![PathBuf::from("src/auth.rs")])
+        .dispatch_task(
+            "fix auth bug",
+            vec![],
+            vec![PathBuf::from("src/auth.rs")],
+            None,
+        )
         .await
         .unwrap();
 
@@ -579,11 +616,11 @@ async fn queued_task_still_registered() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let id_a = orch
-        .dispatch_task("task A", vec![], vec![PathBuf::from("src/main.rs")])
+        .dispatch_task("task A", vec![], vec![PathBuf::from("src/main.rs")], None)
         .await
         .unwrap();
     let _id_b = orch
-        .dispatch_task("task B", vec![], vec![PathBuf::from("src/main.rs")])
+        .dispatch_task("task B", vec![], vec![PathBuf::from("src/main.rs")], None)
         .await
         .unwrap();
 
@@ -599,7 +636,10 @@ async fn update_focus_sends_steering_message() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
 
     let update = FocusUpdate::new()
         .with_add(vec!["performance".to_string()])
@@ -630,11 +670,11 @@ async fn update_focus_queued_task_fails() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let _id_a = orch
-        .dispatch_task("task A", vec![], vec![PathBuf::from("src/x.rs")])
+        .dispatch_task("task A", vec![], vec![PathBuf::from("src/x.rs")], None)
         .await
         .unwrap();
     let id_b = orch
-        .dispatch_task("task B", vec![], vec![PathBuf::from("src/x.rs")])
+        .dispatch_task("task B", vec![], vec![PathBuf::from("src/x.rs")], None)
         .await
         .unwrap();
 
@@ -657,7 +697,7 @@ async fn full_flow_dispatch_heartbeat_and_query() {
 
     let focus = vec!["security risks".to_string(), "breaking changes".to_string()];
     let task_id = orch
-        .dispatch_task("refactor auth module", focus, vec![])
+        .dispatch_task("refactor auth module", focus, vec![], None)
         .await
         .unwrap();
 
@@ -691,7 +731,7 @@ async fn highlight_aggregation() {
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
     let task_id = orch
-        .dispatch_task("test", vec!["security".to_string()], vec![])
+        .dispatch_task("test", vec!["security".to_string()], vec![], None)
         .await
         .unwrap();
 
@@ -713,7 +753,10 @@ async fn cancel_task_sends_steering() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     let result = orch.cancel_task(&task_id);
     assert!(result.is_ok());
 }
@@ -724,7 +767,10 @@ async fn inject_message_sends_steering() {
     let clock = Arc::new(opca_test_utils::FakeClock::default()) as Arc<dyn Clock>;
     let (mut orch, _tmp) = make_orchestrator(provider, clock);
 
-    let task_id = orch.dispatch_task("test", vec![], vec![]).await.unwrap();
+    let task_id = orch
+        .dispatch_task("test", vec![], vec![], None)
+        .await
+        .unwrap();
     let result = orch.inject_message(&task_id, Message::user("additional info"));
     assert!(result.is_ok());
 }

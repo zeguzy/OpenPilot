@@ -14,6 +14,7 @@
 pub mod audit;
 pub mod completion;
 pub mod config;
+pub mod continuation;
 pub mod di;
 pub mod extensions;
 pub mod focus;

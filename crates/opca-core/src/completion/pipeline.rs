@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use anyhow::Result;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::audit::AuditVerdict;
+use crate::audit::{AuditAgent, AuditVerdict, ModelTier};
+use crate::continuation::{ChainId, ContinuationReason};
 use crate::focus::Highlight;
 use crate::lifecycle::Heartbeat;
 use crate::orchestrator::Orchestrator;
@@ -41,6 +42,17 @@ pub enum CompletionOutcome {
     Rejected(String),
     /// Pipeline failed at some stage (non-recoverable error).
     Failed(String),
+    /// Task needs a continuation iteration; coordinator should dispatch a new Task.
+    Continue {
+        /// Why the continuation is needed.
+        reason: ContinuationReason,
+        /// Structured prompt seed for the next iteration.
+        next_prompt_seed: String,
+        /// Which chain this iteration belongs to.
+        chain_id: ChainId,
+        /// Which iteration number this will be (1-based).
+        iteration: u32,
+    },
 }
 
 /// Result of the Freeze stage.
@@ -62,6 +74,8 @@ pub struct CompletionPipeline {
     orchestrator: Arc<Mutex<Orchestrator>>,
     cleanup_schedule: CleanupSchedule,
     dependencies: DependencyGraph,
+    pending_successors: Vec<String>,
+    last_review_verdict: Option<AuditVerdict>,
 }
 
 impl CompletionPipeline {
@@ -71,7 +85,14 @@ impl CompletionPipeline {
             orchestrator,
             cleanup_schedule: CleanupSchedule::new(),
             dependencies: DependencyGraph::new(),
+            pending_successors: Vec::new(),
+            last_review_verdict: None,
         }
+    }
+
+    #[must_use]
+    pub const fn last_review_verdict(&self) -> Option<AuditVerdict> {
+        self.last_review_verdict
     }
 
     #[must_use]
@@ -132,7 +153,9 @@ impl CompletionPipeline {
         let diff = workspace.diff()?;
 
         // Stage 2: Review
-        let review_result = review_stage(provider, task_id, workspace.path(), &diff, active);
+        let review_result =
+            review_stage(&self.orchestrator, task_id, workspace.path(), &diff, active).await;
+        self.last_review_verdict = review_result.verdict;
         if !review_result.accepted {
             let level = notification::notification_level(review_result.risk, review_result.verdict);
             return Ok(match level {
@@ -184,13 +207,13 @@ impl CompletionPipeline {
 
         // Dependency chain: activate successors.
         let successors = self.dependencies.drain_successors(task_id);
-
         if !successors.is_empty() {
             tracing::info!(
-                "Task {} merged; {} successor(s) activated",
+                "Task {} merged; {} successor(s) pending dispatch",
                 task_id,
                 successors.len()
             );
+            self.pending_successors.extend(successors);
         }
 
         Ok(CompletionOutcome::Merged)
@@ -221,6 +244,16 @@ impl CompletionPipeline {
     pub fn activated_successors(&self, task_id: &str) -> Vec<String> {
         self.dependencies.on_task_merged(task_id)
     }
+
+    /// Drains pending successor descriptions accumulated during `run`.
+    ///
+    /// Callers (typically the Orchestrator) iterate these and call
+    /// `dispatch_task` for each, since the pipeline cannot dispatch
+    /// directly (it would require holding the `Mutex` guard across an
+    /// await point).
+    pub fn drain_pending_successors(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending_successors)
+    }
 }
 
 /// Explicit inputs for [`CompletionPipeline::complete`].
@@ -235,25 +268,54 @@ pub struct CompletionInput<'a> {
     pub target: &'a Path,
 }
 
-fn review_stage(
-    _provider: &dyn Provider,
-    _task_id: &str,
-    _workspace_path: &Path,
+async fn review_stage(
+    orchestrator: &Arc<Mutex<Orchestrator>>,
+    task_id: &str,
+    workspace_path: &Path,
     diff: &crate::workspace::ChangeSet,
-    _active: &[Message],
+    active: &[Message],
 ) -> ReviewResult {
     let risk = review::assess_risk(diff);
     match risk {
-        RiskLevel::High => ReviewResult {
-            risk,
-            verdict: Some(AuditVerdict::Warn),
-            accepted: false,
-        },
-        RiskLevel::Low | RiskLevel::Medium => ReviewResult {
+        RiskLevel::Low => ReviewResult {
             risk,
             verdict: None,
             accepted: true,
         },
+        RiskLevel::Medium | RiskLevel::High => {
+            let provider = {
+                let orch = orchestrator.lock().expect("poisoned");
+                orch.provider()
+            };
+            let task_memory = Arc::new(Mutex::new(active.to_vec()));
+            let agent = AuditAgent::new(
+                provider,
+                task_id,
+                workspace_path.to_path_buf(),
+                diff.clone(),
+                task_memory,
+                Vec::new(),
+                ModelTier::Cheap,
+            );
+            match agent.audit().await {
+                Ok(report) => {
+                    let accepted = matches!(report.verdict, AuditVerdict::Confirmed);
+                    ReviewResult {
+                        risk,
+                        verdict: Some(report.verdict),
+                        accepted,
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Audit agent failed for task {task_id}: {e}");
+                    ReviewResult {
+                        risk,
+                        verdict: Some(AuditVerdict::NeedsHumanReview),
+                        accepted: false,
+                    }
+                }
+            }
+        }
     }
 }
 

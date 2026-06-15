@@ -1,0 +1,6 @@
+---
+source: crates/opca-core/src/continuation/termination.rs
+assertion_line: 148
+expression: "reason.notification_message(5, 2.50)"
+---
+Continuation chain stopped — iteration limit reached after 5 iterations, $2.50

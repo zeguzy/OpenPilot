@@ -6,10 +6,10 @@ use opca_core::focus::Severity;
 // ── Task 11.9: Snapshot tests for Audit report format ─────────────────────
 
 #[test]
-fn snapshot_pass_report() {
+fn snapshot_confirmed_report() {
     let report = AuditReport {
-        task_id: "task-pass-001".to_string(),
-        verdict: AuditVerdict::Pass,
+        task_id: "task-confirmed-001".to_string(),
+        verdict: AuditVerdict::Confirmed,
         confidence: 0.95,
         findings: vec![],
         summary: "All checks passed, diff is clean".to_string(),
@@ -18,10 +18,10 @@ fn snapshot_pass_report() {
 }
 
 #[test]
-fn snapshot_warn_report() {
+fn snapshot_false_positive_report() {
     let report = AuditReport {
-        task_id: "task-warn-002".to_string(),
-        verdict: AuditVerdict::Warn,
+        task_id: "task-false-positive-002".to_string(),
+        verdict: AuditVerdict::FalsePositive,
         confidence: 0.7,
         findings: vec![Finding {
             severity: Severity::Warning,
@@ -34,10 +34,10 @@ fn snapshot_warn_report() {
 }
 
 #[test]
-fn snapshot_fail_report() {
+fn snapshot_needs_fix_report() {
     let report = AuditReport {
-        task_id: "task-fail-003".to_string(),
-        verdict: AuditVerdict::Fail,
+        task_id: "task-needs-fix-003".to_string(),
+        verdict: AuditVerdict::NeedsFix,
         confidence: 0.2,
         findings: vec![
             Finding {
@@ -57,10 +57,26 @@ fn snapshot_fail_report() {
 }
 
 #[test]
+fn snapshot_needs_human_review_report() {
+    let report = AuditReport {
+        task_id: "task-needs-human-review-004".to_string(),
+        verdict: AuditVerdict::NeedsHumanReview,
+        confidence: 0.4,
+        findings: vec![Finding {
+            severity: Severity::Info,
+            location: "src/legacy.rs:100".to_string(),
+            issue: "Ambiguous refactor, cannot verify correctness".to_string(),
+        }],
+        summary: "Cannot determine correctness automatically".to_string(),
+    };
+    assert_json_snapshot!(report);
+}
+
+#[test]
 fn snapshot_decision_accept() {
     let report = AuditReport {
         task_id: "task-decision-accept".to_string(),
-        verdict: AuditVerdict::Pass,
+        verdict: AuditVerdict::Confirmed,
         confidence: 0.9,
         findings: vec![],
         summary: "Clean".to_string(),
@@ -73,7 +89,7 @@ fn snapshot_decision_accept() {
 fn snapshot_decision_override() {
     let report = AuditReport {
         task_id: "task-decision-override".to_string(),
-        verdict: AuditVerdict::Fail,
+        verdict: AuditVerdict::NeedsFix,
         confidence: 0.3,
         findings: vec![Finding {
             severity: Severity::Blocking,
@@ -84,34 +100,34 @@ fn snapshot_decision_override() {
     };
     let decision = AuditDecision::override_to(
         report,
-        AuditVerdict::Pass,
+        AuditVerdict::Confirmed,
         "tests were pre-existing failures, not caused by this task",
     );
     assert_json_snapshot!(decision);
 }
 
 #[test]
-fn report_json_serializes_verdict_lowercase() {
+fn report_json_serializes_verdict_snake_case() {
     let report = AuditReport {
         task_id: "t".to_string(),
-        verdict: AuditVerdict::Warn,
+        verdict: AuditVerdict::FalsePositive,
         confidence: 0.5,
         findings: vec![],
         summary: "test".to_string(),
     };
     let json = serde_json::to_string(&report).unwrap();
     assert!(
-        json.contains("\"warn\""),
-        "verdict should serialize as lowercase: {json}"
+        json.contains("\"false_positive\""),
+        "verdict should serialize as snake_case: {json}"
     );
-    assert!(!json.contains("\"Warn\""), "no uppercase: {json}");
+    assert!(!json.contains("\"FalsePositive\""), "no PascalCase: {json}");
 }
 
 #[test]
 fn report_json_roundtrip() {
     let report = AuditReport {
         task_id: "roundtrip".to_string(),
-        verdict: AuditVerdict::Fail,
+        verdict: AuditVerdict::NeedsFix,
         confidence: 0.15,
         findings: vec![Finding {
             severity: Severity::Info,

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use opca_cli::commands::{SlashCommand, SlashError};
+use opca_cli::commands::{ContinueAction, SlashCommand, SlashError, StopTarget};
 use opca_cli::mock::{format_task_line, format_task_list, format_task_status};
 use opca_cli::repl::{BufferOutput, HandleOutcome, Output, Repl};
 use opca_cli::{MockOrchestrator, Notification, OrchestratorApi, Reply, TaskInfo};
@@ -506,4 +506,317 @@ async fn tasks_command_in_loop_lists_active() {
 
     input_tx.send(String::new()).ok();
     handle.abort();
+}
+
+#[test]
+fn slash_continue_start_parses_prompt() {
+    let cmd = SlashCommand::parse("/continue fix all the bugs")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Start {
+                prompt: "fix all the bugs".to_string(),
+                max_iterations: None,
+                budget: None,
+            }
+        }
+    );
+}
+
+#[test]
+fn slash_continue_start_parses_budget_overrides() {
+    let cmd = SlashCommand::parse("/continue --max-iterations 4 --budget 1.5 refactor X")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Start {
+                prompt: "refactor X".to_string(),
+                max_iterations: Some(4),
+                budget: Some(1.5),
+            }
+        }
+    );
+}
+
+#[test]
+fn slash_continue_start_supports_short_flags_in_any_order() {
+    let cmd = SlashCommand::parse("/continue refactor Y -i 3 -b 2.0 extra")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Start {
+                prompt: "refactor Y extra".to_string(),
+                max_iterations: Some(3),
+                budget: Some(2.0),
+            }
+        }
+    );
+}
+
+#[test]
+fn slash_continue_status_no_id() {
+    let cmd = SlashCommand::parse("/continue status").unwrap().unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Status { chain_id: None }
+        }
+    );
+}
+
+#[test]
+fn slash_continue_status_with_id() {
+    let cmd = SlashCommand::parse("/continue status chain-7")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Status {
+                chain_id: Some("chain-7".to_string()),
+            }
+        }
+    );
+}
+
+#[test]
+fn slash_continue_alias_continuation() {
+    let cmd = SlashCommand::parse("/continuation do work")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        cmd,
+        SlashCommand::Continue {
+            action: ContinueAction::Start { .. }
+        }
+    ));
+}
+
+#[test]
+fn slash_continue_missing_prompt_errors() {
+    let result = SlashCommand::parse("/continue");
+    assert!(matches!(result, Err(SlashError::MissingPrompt(_))));
+}
+
+#[test]
+fn slash_continue_only_flags_errors() {
+    let result = SlashCommand::parse("/continue --max-iterations 3");
+    assert!(matches!(result, Err(SlashError::MissingPrompt(_))));
+}
+
+#[test]
+fn slash_continue_bad_int_errors() {
+    let result = SlashCommand::parse("/continue --max-iterations abc do work");
+    assert!(matches!(result, Err(SlashError::Malformed(_))));
+}
+
+#[test]
+fn slash_continue_missing_flag_value_errors() {
+    let result = SlashCommand::parse("/continue --budget do work");
+    assert!(matches!(result, Err(SlashError::Malformed(_))));
+}
+
+#[test]
+fn slash_stop_continuation_one_id() {
+    let cmd = SlashCommand::parse("/stop-continuation chain-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::StopContinuation {
+            target: StopTarget::One("chain-1".to_string()),
+        }
+    );
+}
+
+#[test]
+fn slash_stop_continuation_all_case_insensitive() {
+    for alias in ["/stop-continuation all", "/stop-continuation ALL"] {
+        let cmd = SlashCommand::parse(alias).unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            SlashCommand::StopContinuation {
+                target: StopTarget::All,
+            }
+        );
+    }
+}
+
+#[test]
+fn slash_stop_continuation_alias() {
+    let cmd = SlashCommand::parse("/stop-continue chain-9")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::StopContinuation {
+            target: StopTarget::One("chain-9".to_string()),
+        }
+    );
+}
+
+#[test]
+fn slash_stop_continuation_missing_target_errors() {
+    let result = SlashCommand::parse("/stop-continuation");
+    assert!(matches!(result, Err(SlashError::MissingChainId(_))));
+}
+
+#[test]
+fn mock_start_continuation_returns_unique_chain_ids() {
+    let mock = MockOrchestrator::new();
+    let id1 = mock.start_continuation("do X", None, None);
+    let id2 = mock.start_continuation("do Y", None, None);
+    assert_ne!(id1, id2);
+    assert!(id1.starts_with("chain-"));
+    assert!(id2.starts_with("chain-"));
+}
+
+#[test]
+fn mock_start_continuation_dispatches_root_task() {
+    let mock = MockOrchestrator::new();
+    let chain_id = mock.start_continuation("refactor auth", None, None);
+    assert!(mock.is_chain_active(&chain_id));
+    assert_eq!(mock.list_tasks().len(), 1);
+    assert!(mock.task_ids()[0].starts_with("task-"));
+}
+
+#[test]
+fn mock_stop_continuation_one_terminates_chain() {
+    let mock = MockOrchestrator::new();
+    let id = mock.start_continuation("work", None, None);
+    assert!(mock.is_chain_active(&id));
+    let stopped = mock.stop_continuation(&id).unwrap();
+    assert_eq!(stopped, 1);
+    assert!(!mock.is_chain_active(&id));
+}
+
+#[test]
+fn mock_stop_continuation_unknown_errors() {
+    let mock = MockOrchestrator::new();
+    let err = mock.stop_continuation("chain-999").unwrap_err();
+    assert!(err.contains("not found"));
+}
+
+#[test]
+fn mock_stop_continuation_already_stopped_returns_zero() {
+    let mock = MockOrchestrator::new();
+    let id = mock.start_continuation("work", None, None);
+    mock.stop_continuation(&id).unwrap();
+    let second = mock.stop_continuation(&id).unwrap();
+    assert_eq!(second, 0);
+}
+
+#[test]
+fn mock_stop_continuation_all_terminates_every_active_chain() {
+    let mock = MockOrchestrator::new();
+    let id1 = mock.start_continuation("a", None, None);
+    let id2 = mock.start_continuation("b", None, None);
+    let id3 = mock.start_continuation("c", None, None);
+    let stopped = mock.stop_continuation("all").unwrap();
+    assert_eq!(stopped, 3);
+    assert!(!mock.is_chain_active(&id1));
+    assert!(!mock.is_chain_active(&id2));
+    assert!(!mock.is_chain_active(&id3));
+}
+
+#[test]
+fn mock_stop_continuation_all_with_no_chains_returns_zero() {
+    let mock = MockOrchestrator::new();
+    let stopped = mock.stop_continuation("all").unwrap();
+    assert_eq!(stopped, 0);
+}
+
+#[test]
+fn mock_continuation_status_empty_reports_no_chains() {
+    let mock = MockOrchestrator::new();
+    let report = mock.continuation_status(None);
+    assert!(report.contains("No continuation chains"));
+}
+
+#[test]
+fn mock_continuation_status_lists_all_chains() {
+    let mock = MockOrchestrator::new();
+    let id1 = mock.start_continuation("first task", None, None);
+    let id2 = mock.start_continuation("second task", Some(5), Some(1.0));
+    let report = mock.continuation_status(None);
+    assert!(report.contains("2 active"));
+    assert!(report.contains(&id1));
+    assert!(report.contains(&id2));
+    assert!(report.contains("first task"));
+    assert!(report.contains("second task"));
+}
+
+#[test]
+fn mock_continuation_status_single_chain() {
+    let mock = MockOrchestrator::new();
+    let id = mock.start_continuation("specific task", Some(7), Some(2.5));
+    let report = mock.continuation_status(Some(&id));
+    assert!(report.contains(&id));
+    assert!(report.contains("specific task"));
+    assert!(report.contains('7'));
+    assert!(report.contains("2.50"));
+}
+
+#[test]
+fn mock_continuation_status_unknown_chain_reports_missing() {
+    let mock = MockOrchestrator::new();
+    let report = mock.continuation_status(Some("chain-ghost"));
+    assert!(report.contains("No chain named 'chain-ghost'"));
+}
+
+#[test]
+fn repl_continue_start_prints_chain_id() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line("/continue fix the bug");
+    let text = buffer.joined();
+    assert!(text.contains("continuation chain"));
+    assert!(text.contains("started"));
+    assert!(text.contains("fix the bug"));
+}
+
+#[test]
+fn repl_continue_status_prints_report() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let chain_id = mock.start_continuation("seed task", None, None);
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line("/continue status");
+    let text = buffer.joined();
+    assert!(text.contains(&chain_id));
+}
+
+#[test]
+fn repl_stop_continuation_all_with_no_chains_reports_none() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line("/stop-continuation all");
+    let text = buffer.joined();
+    assert!(text.contains("no active"));
+}
+
+#[test]
+fn repl_stop_continuation_one_reports_stopped() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let chain_id = mock.start_continuation("work", None, None);
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line(&format!("/stop-continuation {chain_id}"));
+    let text = buffer.joined();
+    assert!(text.contains("stopped"));
+    assert!(text.contains(&chain_id));
+}
+
+#[test]
+fn repl_help_includes_continue_and_stop_commands() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line("/help");
+    let text = buffer.joined();
+    assert!(text.contains("/continue"));
+    assert!(text.contains("/stop-continuation"));
 }

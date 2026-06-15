@@ -1,0 +1,17 @@
+---
+source: crates/opca-core/tests/audit_report.rs
+expression: report
+---
+{
+  "task_id": "task-needs-human-review-004",
+  "verdict": "needs_human_review",
+  "confidence": 0.4,
+  "findings": [
+    {
+      "severity": "info",
+      "location": "src/legacy.rs:100",
+      "issue": "Ambiguous refactor, cannot verify correctness"
+    }
+  ],
+  "summary": "Cannot determine correctness automatically"
+}

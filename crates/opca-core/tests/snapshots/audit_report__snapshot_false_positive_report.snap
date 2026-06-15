@@ -1,11 +1,10 @@
 ---
 source: crates/opca-core/tests/audit_report.rs
-assertion_line: 33
 expression: report
 ---
 {
-  "task_id": "task-warn-002",
-  "verdict": "warn",
+  "task_id": "task-false-positive-002",
+  "verdict": "false_positive",
   "confidence": 0.7,
   "findings": [
     {

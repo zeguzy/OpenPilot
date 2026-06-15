@@ -149,18 +149,22 @@ impl App {
                     self.stop_working();
                 }
                 StreamEvent::Dispatch(description) => {
-                    if let Some(last) = self.chat_items.last_mut() {
-                        *last = ChatItem::SystemMessage(format!(
-                            "dispatched background task: {description}"
-                        ));
-                    }
                     let task_id = self.orchestrator.dispatch(&description);
-                    self.chat_items.push(ChatItem::TaskPanel {
-                        task_id,
-                        description,
-                        collapsed: true,
-                        events: Vec::new(),
-                    });
+                    if task_id.starts_with("dispatch-error") {
+                        if let Some(last) = self.chat_items.last_mut() {
+                            *last = ChatItem::Error(task_id);
+                        }
+                    } else {
+                        if let Some(last) = self.chat_items.last_mut() {
+                            *last = ChatItem::SystemMessage("dispatched to background".to_string());
+                        }
+                        self.chat_items.push(ChatItem::TaskPanel {
+                            task_id,
+                            description,
+                            collapsed: true,
+                            events: Vec::new(),
+                        });
+                    }
                     self.stop_working();
                 }
                 StreamEvent::Error(err) => {

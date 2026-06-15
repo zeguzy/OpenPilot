@@ -6,7 +6,7 @@ use reedline::{DefaultPrompt, Prompt, PromptEditMode, PromptHistorySearch, Reedl
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-use crate::commands::{HELP_TEXT, SlashCommand};
+use crate::commands::{ContinueAction, HELP_TEXT, SlashCommand, StopTarget};
 use crate::mock::format_task_line;
 use crate::{Notification, OrchestratorApi, Reply, TaskInfo};
 
@@ -156,6 +156,40 @@ impl Repl {
             SlashCommand::Help => {
                 self.output.print_line(HELP_TEXT);
             }
+            SlashCommand::Continue { action } => match action {
+                ContinueAction::Start {
+                    prompt,
+                    max_iterations,
+                    budget,
+                } => {
+                    let chain_id =
+                        self.orchestrator
+                            .start_continuation(&prompt, max_iterations, budget);
+                    self.output.print_line(&format!(
+                        "🔗 continuation chain {chain_id} started — {prompt}"
+                    ));
+                }
+                ContinueAction::Status { chain_id } => {
+                    let report = self.orchestrator.continuation_status(chain_id.as_deref());
+                    self.output.print_line(&report);
+                }
+            },
+            SlashCommand::StopContinuation { target } => match target {
+                StopTarget::All => match self.orchestrator.stop_continuation("all") {
+                    Ok(0) => self.output.print_line("no active continuation chains"),
+                    Ok(n) => self
+                        .output
+                        .print_line(&format!("✗ stopped {n} continuation chain(s)")),
+                    Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
+                },
+                StopTarget::One(id) => match self.orchestrator.stop_continuation(&id) {
+                    Ok(0) => self.output.print_line(&format!("chain {id} is not active")),
+                    Ok(_) => self
+                        .output
+                        .print_line(&format!("✗ stopped continuation chain {id}")),
+                    Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
+                },
+            },
             SlashCommand::Quit => return HandleOutcome::Quit,
         }
         HandleOutcome::Continue

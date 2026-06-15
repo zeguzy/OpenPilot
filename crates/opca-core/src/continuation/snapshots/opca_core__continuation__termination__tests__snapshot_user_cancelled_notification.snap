@@ -1,0 +1,6 @@
+---
+source: crates/opca-core/src/continuation/termination.rs
+assertion_line: 166
+expression: "reason.notification_message(5, 2.50)"
+---
+Continuation chain cancelled by user after 5 iterations, $2.50

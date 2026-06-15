@@ -97,6 +97,26 @@ default_timeout_ms = 10000
 #   "medium"   Audit agent on diffs > 20 lines or non-doc files
 #   "high"     Audit agent on every completed Task
 risk_threshold = "medium"
+
+[continuation]
+# Continuation loop: automatically re-dispatch Tasks until Audit confirms
+# completion. Disabled by default; set enabled = true to opt in.
+enabled = false
+
+# Maximum iterations per continuation chain (default 10).
+max_iterations = 10
+
+# Maximum accumulated cost in USD across all iterations (default 5.0).
+max_total_cost_usd = 5.0
+
+# Maximum wall-clock duration in minutes (default 30).
+max_total_duration_minutes = 30
+
+# Consecutive no-progress rounds before termination (default 2).
+max_no_progress_rounds = 2
+
+# Audit confidence below which NeedsFix escalates to NeedsHumanReview.
+audit_confidence_threshold = 0.5
 ```
 
 ### Keys the runtime honours today

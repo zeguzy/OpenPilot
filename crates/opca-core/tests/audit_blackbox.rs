@@ -34,27 +34,28 @@ fn clean_diff() -> ChangeSet {
     }
 }
 
-// ── Task 11.6: black-box pass/warn/fail verdicts ──────────────────────────
+// ── Task 11.6: black-box confirmed/false_positive/needs_fix verdicts ──────
 
 #[tokio::test]
-async fn black_box_pass_verdict() {
-    let response = r#"{"verdict":"pass","confidence":0.95,"findings":[],"summary":"all good"}"#;
+async fn black_box_confirmed_verdict() {
+    let response =
+        r#"{"verdict":"confirmed","confidence":0.95,"findings":[],"summary":"all good"}"#;
     let provider = ScriptedProvider::new().then_text(response).then_done();
     let agent = make_agent(provider, clean_diff(), vec![]);
 
     let report = agent.audit().await.unwrap();
 
     assert_eq!(report.task_id, "task-audit-test");
-    assert_eq!(report.verdict, AuditVerdict::Pass);
+    assert_eq!(report.verdict, AuditVerdict::Confirmed);
     assert!((report.confidence - 0.95).abs() < 1e-9);
     assert!(report.findings.is_empty());
     assert_eq!(report.summary, "all good");
 }
 
 #[tokio::test]
-async fn black_box_warn_verdict_with_findings() {
+async fn black_box_false_positive_verdict_with_findings() {
     let response = r#"{
-        "verdict": "warn",
+        "verdict": "false_positive",
         "confidence": 0.7,
         "findings": [
             {"severity": "warning", "location": "src/auth.rs:42", "issue": "missing null check"}
@@ -66,7 +67,7 @@ async fn black_box_warn_verdict_with_findings() {
 
     let report = agent.audit().await.unwrap();
 
-    assert_eq!(report.verdict, AuditVerdict::Warn);
+    assert_eq!(report.verdict, AuditVerdict::FalsePositive);
     assert!((report.confidence - 0.7).abs() < 1e-9);
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].severity, Severity::Warning);
@@ -76,9 +77,9 @@ async fn black_box_warn_verdict_with_findings() {
 }
 
 #[tokio::test]
-async fn black_box_fail_verdict_with_blocking_finding() {
+async fn black_box_needs_fix_verdict_with_blocking_finding() {
     let response = r#"{
-        "verdict": "fail",
+        "verdict": "needs_fix",
         "confidence": 0.3,
         "findings": [
             {"severity": "blocking", "location": "src/crypto.rs:10", "issue": "hardcoded secret key"}
@@ -90,7 +91,7 @@ async fn black_box_fail_verdict_with_blocking_finding() {
 
     let report = agent.audit().await.unwrap();
 
-    assert_eq!(report.verdict, AuditVerdict::Fail);
+    assert_eq!(report.verdict, AuditVerdict::NeedsFix);
     assert!((report.confidence - 0.3).abs() < 1e-9);
     assert_eq!(report.findings.len(), 1);
     assert_eq!(report.findings[0].severity, Severity::Blocking);
@@ -100,7 +101,7 @@ async fn black_box_fail_verdict_with_blocking_finding() {
 
 #[tokio::test]
 async fn black_box_task_id_always_set_from_agent() {
-    let response = r#"{"verdict":"pass","confidence":1.0,"findings":[],"summary":"ok"}"#;
+    let response = r#"{"verdict":"confirmed","confidence":1.0,"findings":[],"summary":"ok"}"#;
     let provider = ScriptedProvider::new().then_text(response).then_done();
     let agent = make_agent(provider, clean_diff(), vec![]);
 
@@ -114,7 +115,7 @@ async fn black_box_task_id_always_set_from_agent() {
 #[tokio::test]
 async fn black_box_multiple_findings() {
     let response = r#"{
-        "verdict": "warn",
+        "verdict": "false_positive",
         "confidence": 0.6,
         "findings": [
             {"severity": "warning", "location": "a.rs:1", "issue": "issue 1"},

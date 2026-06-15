@@ -1,11 +1,10 @@
 ---
 source: crates/opca-core/tests/audit_report.rs
-assertion_line: 17
 expression: report
 ---
 {
-  "task_id": "task-pass-001",
-  "verdict": "pass",
+  "task_id": "task-confirmed-001",
+  "verdict": "confirmed",
   "confidence": 0.95,
   "findings": [],
   "summary": "All checks passed, diff is clean"

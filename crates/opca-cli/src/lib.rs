@@ -81,6 +81,28 @@ pub trait OrchestratorApi: Send + Sync {
         message: &str,
         tx: tokio::sync::mpsc::UnboundedSender<crate::tui::app::StreamEvent>,
     );
+
+    /// Starts a continuation chain rooted at a freshly dispatched Task.
+    ///
+    /// Returns the chain ID. `max_iterations` and `budget` (USD) optionally
+    /// override the configured defaults.
+    fn start_continuation(
+        &self,
+        prompt: &str,
+        max_iterations: Option<u32>,
+        budget: Option<f64>,
+    ) -> String;
+
+    /// Terminates one chain (`chain_id`) or every active chain (when
+    /// `chain_id` is `"all"`, case-insensitive). Returns the number of
+    /// chains that were actually terminated.
+    fn stop_continuation(&self, chain_id: &str) -> Result<usize, String>;
+
+    /// Formats a human-readable status report.
+    ///
+    /// Pass `None` for an overview of every active chain, or `Some(id)` for
+    /// a single chain's detail.
+    fn continuation_status(&self, chain_id: Option<&str>) -> String;
 }
 
 #[derive(Clone)]

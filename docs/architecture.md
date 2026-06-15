@@ -467,6 +467,51 @@ merges, any Task B that depended on A activates automatically. B gets a
 fresh workspace based on the merged state of the main branch, so it
 sees A's changes without a manual handoff.
 
+### Continuation loop
+
+A continuation chain is a sequence of Tasks where each completed Task
+may trigger a new Task to continue unfinished work. The chain only
+terminates when Audit returns `Confirmed`; `FalsePositive` and
+`NeedsFix` trigger a new iteration carrying the audit findings as
+feedback.
+
+```
+Task A (iteration 1)
+  → pipeline: Freeze → Review → Merge → Memorialize → Cleanup
+  → Audit verdict: NeedsFix
+  → ContinuationCoordinator: budget ok, dispatch iteration 2
+
+Task B (iteration 2, parent=A)
+  → pipeline: Freeze → Review → Merge → Memorialize → Cleanup
+  → Audit verdict: Confirmed
+  → chain terminates: ConfirmedComplete
+```
+
+Each iteration is a **fresh Task** with its own workspace, provider,
+and lifecycle. The state machine's `Delivered → Archived` direction is
+preserved — continuation never revives a completed Task.
+
+**Four-dimensional budget** bounds every chain:
+
+| Dimension | Default | Effect |
+|-----------|---------|--------|
+| Max iterations | 10 | Hard cap on total Tasks in the chain |
+| Max cost (USD) | 5.0 | Financial circuit breaker |
+| Max duration | 30 min | Wall-clock timeout |
+| Max no-progress rounds | 2 | Doom-loop detection |
+
+Exhausting any dimension terminates the chain immediately with a
+classified `ChainTerminationReason` that drives the user notification.
+
+**Two-layer completion** (Sisyphus contract): a Task's self-reported
+done claim is never final. An independent Audit agent must confirm the
+work. `NeedsFix` with low confidence escalates to `NeedsHumanReview`,
+stopping the chain and asking the user.
+
+Users control chains with `/continue` (start or query), and
+`/stop-continuation` (terminate). Configuration lives in the
+`[continuation]` section of `.agent/config.toml`.
+
 ## Extension system
 
 opca ships three separate extension points. They are deliberately

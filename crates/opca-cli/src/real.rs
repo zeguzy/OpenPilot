@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use opca_core::continuation::{
+    ChainId, ChainStatus, ChainTerminationReason, ContinuationBudget, ContinuationChain,
+};
 use opca_core::di::{Clock, FileSystem, Process, StdClock, StdFileSystem, StdProcess};
 use opca_core::lifecycle::TaskStatus;
 use opca_core::orchestrator::Orchestrator;
@@ -135,6 +138,8 @@ async fn poll_loop(
         for change in changes {
             subs.retain(|tx| tx.send(change.clone()).is_ok());
         }
+        drop(subs);
+        check_continuations(&inner, &tracked);
     }
 }
 
@@ -183,8 +188,54 @@ fn block_on_dispatch(
     description: &str,
 ) -> Result<String, String> {
     let handle = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
-    let fut = orch.dispatch_task(description, Vec::new(), Vec::new());
+    let fut = orch.dispatch_task(description, Vec::new(), Vec::new(), None);
     tokio::task::block_in_place(|| handle.block_on(fut)).map_err(|e| e.to_string())
+}
+
+fn check_continuations(inner: &Arc<Mutex<Orchestrator>>, tracked: &Arc<Mutex<TrackedTasks>>) {
+    let delivered_in_chains: Vec<String> = {
+        let orch = inner.lock().expect("poisoned");
+        orch.continuation()
+            .list_active_chains()
+            .iter()
+            .filter_map(|chain| {
+                let tid = chain.current_task_id();
+                match orch.latest_heartbeat(tid) {
+                    Some(hb) if hb.status == TaskStatus::Delivered => Some(tid.to_string()),
+                    _ => None,
+                }
+            })
+            .collect()
+    };
+
+    for task_id in delivered_in_chains {
+        let mut orch = inner.lock().expect("poisoned");
+        let req = orch.evaluate_continuation(&task_id, None, 0.0, &[]);
+        if let Some(req) = req {
+            let chain_id = req.chain_id.clone();
+            let parent = req.parent_task_id.clone();
+            let prompt = req.prompt_seed.clone();
+            let fut = orch.dispatch_task(&prompt, Vec::new(), Vec::new(), Some(parent));
+            let handle = tokio::runtime::Handle::try_current();
+            if let Ok(h) = handle {
+                match tokio::task::block_in_place(|| h.block_on(fut)) {
+                    Ok(new_id) => {
+                        orch.continuation_mut()
+                            .set_current_task(&chain_id, new_id.clone());
+                        drop(orch);
+                        tracked.lock().expect("poisoned").tasks.push(TrackedTask {
+                            id: new_id,
+                            description: prompt,
+                            accepted: false,
+                            rejected: false,
+                        });
+                        tracing::info!("Continuation dispatched for chain {chain_id}");
+                    }
+                    Err(e) => tracing::warn!("Continuation dispatch failed: {e}"),
+                }
+            }
+        }
+    }
 }
 
 fn build_task_info(orch: &Orchestrator, tracked: &TrackedTasks, task_id: &str) -> Option<TaskInfo> {
@@ -236,8 +287,8 @@ impl OrchestratorApi for RealOrchestrator {
                 id
             }
             Err(e) => {
-                warn!("dispatch failed: {e}");
-                "dispatch-error".to_string()
+                tracing::error!("dispatch failed: {e}");
+                format!("dispatch-error: {e}")
             }
         }
     }
@@ -342,9 +393,6 @@ impl OrchestratorApi for RealOrchestrator {
         let provider = self.provider.clone();
         let msg = Message::user(message.to_string());
         let prompt = opca_core::provider::orchestrator_prompt().to_string();
-        let inner = self.inner.clone();
-        let tracked = self.tracked.clone();
-        let handle = tokio::runtime::Handle::try_current().ok();
         tokio::spawn(async move {
             let result = provider.stream(&[msg], &[], Some(&prompt)).await;
             match result {
@@ -363,8 +411,7 @@ impl OrchestratorApi for RealOrchestrator {
                                     line_buffer.push_str(&delta);
                                     if line_buffer.contains('\n') {
                                         first_line_checked = true;
-                                        if !line_buffer.trim_start().starts_with("[OPCA_DISPATCH]")
-                                        {
+                                        if !line_buffer.trim_start().starts_with("OPCA_DISPATCH:") {
                                             let _ = tx.send(crate::tui::app::StreamEvent::Delta(
                                                 std::mem::take(&mut line_buffer),
                                             ));
@@ -375,7 +422,7 @@ impl OrchestratorApi for RealOrchestrator {
                             Ok(ProviderEvent::Done { .. }) => {
                                 if !first_line_checked
                                     && !line_buffer.is_empty()
-                                    && !line_buffer.trim_start().starts_with("[OPCA_DISPATCH]")
+                                    && !line_buffer.trim_start().starts_with("OPCA_DISPATCH:")
                                 {
                                     let _ = tx.send(crate::tui::app::StreamEvent::Delta(
                                         std::mem::take(&mut line_buffer),
@@ -390,10 +437,10 @@ impl OrchestratorApi for RealOrchestrator {
                             }
                         }
                     }
-                    if full_text.trim_start().starts_with("[OPCA_DISPATCH]") {
+                    if full_text.trim_start().starts_with("OPCA_DISPATCH:") {
                         let description = full_text
                             .trim_start()
-                            .trim_start_matches("[OPCA_DISPATCH]")
+                            .trim_start_matches("OPCA_DISPATCH:")
                             .lines()
                             .next()
                             .unwrap_or("")
@@ -401,29 +448,8 @@ impl OrchestratorApi for RealOrchestrator {
                             .to_string();
                         if description.is_empty() {
                             let _ = tx.send(crate::tui::app::StreamEvent::Done);
-                            return;
-                        }
-                        let _ =
-                            tx.send(crate::tui::app::StreamEvent::Dispatch(description.clone()));
-                        if let Some(h) = handle {
-                            let desc = description;
-                            let h2 = h.clone();
-                            h.spawn(async move {
-                                let result = tokio::task::block_in_place(|| {
-                                    h2.block_on(async {
-                                        let mut orch = inner.lock().expect("poisoned");
-                                        orch.dispatch_task(&desc, Vec::new(), Vec::new()).await
-                                    })
-                                });
-                                if let Ok(id) = result {
-                                    tracked.lock().expect("poisoned").tasks.push(TrackedTask {
-                                        id,
-                                        description: desc,
-                                        accepted: false,
-                                        rejected: false,
-                                    });
-                                }
-                            });
+                        } else {
+                            let _ = tx.send(crate::tui::app::StreamEvent::Dispatch(description));
                         }
                     } else {
                         let _ = tx.send(crate::tui::app::StreamEvent::Done);
@@ -434,6 +460,146 @@ impl OrchestratorApi for RealOrchestrator {
                 }
             }
         });
+    }
+
+    fn start_continuation(
+        &self,
+        prompt: &str,
+        max_iterations: Option<u32>,
+        budget: Option<f64>,
+    ) -> String {
+        let task_id = {
+            let mut orch = self.inner.lock().expect("poisoned");
+            match block_on_dispatch(&mut orch, prompt) {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::error!("continuation dispatch failed: {e}");
+                    return format!("dispatch-error: {e}");
+                }
+            }
+        };
+        self.tracked
+            .lock()
+            .expect("poisoned")
+            .tasks
+            .push(TrackedTask {
+                id: task_id.clone(),
+                description: prompt.to_string(),
+                accepted: false,
+                rejected: false,
+            });
+
+        let budget = build_budget(max_iterations, budget);
+        let chain_id = {
+            let mut orch = self.inner.lock().expect("poisoned");
+            orch.continuation_mut().start_chain(task_id.clone(), budget)
+        };
+        tracing::info!(
+            "started continuation chain {} rooted at task {task_id}",
+            chain_id.as_str()
+        );
+        chain_id.as_str().to_string()
+    }
+
+    fn stop_continuation(&self, chain_id: &str) -> Result<usize, String> {
+        let mut orch = self.inner.lock().expect("poisoned");
+        if chain_id.eq_ignore_ascii_case("all") {
+            let active_ids: Vec<ChainId> = orch
+                .continuation()
+                .list_active_chains()
+                .iter()
+                .map(|c| c.id().clone())
+                .collect();
+            let count = active_ids.len();
+            for id in active_ids {
+                orch.continuation_mut()
+                    .terminate(&id, ChainTerminationReason::UserCancelled);
+            }
+            return Ok(count);
+        }
+        let chain = orch
+            .continuation()
+            .list_active_chains()
+            .iter()
+            .find(|c| c.id().as_str() == chain_id)
+            .map(|c| c.id().clone())
+            .ok_or_else(|| format!("chain '{chain_id}' not found or already terminated"))?;
+        orch.continuation_mut()
+            .terminate(&chain, ChainTerminationReason::UserCancelled);
+        Ok(1)
+    }
+
+    fn continuation_status(&self, chain_id: Option<&str>) -> String {
+        let orch = self.inner.lock().expect("poisoned");
+        if let Some(id) = chain_id {
+            let chain = find_chain_by_str(orch.continuation().list_active_chains(), id);
+            return match chain {
+                Some(c) => format_chain_detail(c),
+                None => format!("No active chain named '{id}'."),
+            };
+        }
+        let active = orch.continuation().list_active_chains();
+        if active.is_empty() {
+            return "No active continuation chains.".to_string();
+        }
+        let mut out = format!("Active Continuation Chains ({}):\n", active.len());
+        for chain in active {
+            out.push_str("  ");
+            out.push_str(&format_chain_detail(chain));
+            out.push('\n');
+        }
+        out.trim_end().to_string()
+    }
+}
+
+fn find_chain_by_str<'a>(
+    chains: Vec<&'a ContinuationChain>,
+    needle: &str,
+) -> Option<&'a ContinuationChain> {
+    chains.into_iter().find(|c| c.id().as_str() == needle)
+}
+
+const DEFAULT_MAX_ITERATIONS: u32 = 10;
+const DEFAULT_MAX_TOTAL_COST_USD: f64 = 5.0;
+const DEFAULT_MAX_TOTAL_DURATION: Duration = Duration::from_secs(30 * 60);
+const DEFAULT_MAX_NO_PROGRESS_ROUNDS: u32 = 2;
+
+fn build_budget(max_iterations: Option<u32>, budget: Option<f64>) -> ContinuationBudget {
+    ContinuationBudget::new(
+        max_iterations.unwrap_or(DEFAULT_MAX_ITERATIONS),
+        budget.unwrap_or(DEFAULT_MAX_TOTAL_COST_USD),
+        DEFAULT_MAX_TOTAL_DURATION,
+        DEFAULT_MAX_NO_PROGRESS_ROUNDS,
+    )
+}
+
+fn format_chain_detail(chain: &ContinuationChain) -> String {
+    let id = chain.id().as_str();
+    let iter = chain.current_iteration();
+    let max_iter = chain.budget().max_iterations();
+    let cost = chain.budget().accumulated_cost_usd();
+    let max_cost = chain.budget().max_total_cost_usd();
+    let elapsed = chain.budget().elapsed();
+    let status = match chain.status() {
+        ChainStatus::Active => "active".to_string(),
+        ChainStatus::Terminated(reason) => {
+            format!("terminated ({})", format_termination_reason(reason))
+        }
+    };
+    format!(
+        "{id} [{status}] iteration {iter}/{max_iter}, ${cost:.2}/${max_cost:.2}, {elapsed:?} elapsed — root {}",
+        chain.root_task_id(),
+    )
+}
+
+const fn format_termination_reason(reason: &ChainTerminationReason) -> &'static str {
+    match reason {
+        ChainTerminationReason::ConfirmedComplete => "confirmed complete",
+        ChainTerminationReason::BudgetExhausted(_) => "budget exhausted",
+        ChainTerminationReason::NoProgress => "no progress",
+        ChainTerminationReason::UserCancelled => "user cancelled",
+        ChainTerminationReason::NeedsHumanReview => "needs human review",
+        ChainTerminationReason::TaskError(_) => "task error",
     }
 }
 

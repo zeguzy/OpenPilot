@@ -60,13 +60,15 @@ async fn deep_dive_reads_task_reasoning_for_suspicious_diff() {
         Message::assistant("I deleted old_auth.rs to clean up dead code"),
     ];
 
-    let response =
-        r#"{"verdict":"warn","confidence":0.5,"findings":[],"summary":"suspicious deletion"}"#;
+    let response = r#"{"verdict":"false_positive","confidence":0.5,"findings":[],"summary":"suspicious deletion"}"#;
     let provider = ScriptedProvider::new().then_text(response).then_done();
     let agent = make_agent(provider, suspicious_diff(), task_memory);
 
     let report = agent.audit().await.unwrap();
-    assert_eq!(report.verdict, opca_core::audit::AuditVerdict::Warn);
+    assert_eq!(
+        report.verdict,
+        opca_core::audit::AuditVerdict::FalsePositive
+    );
 
     let context = agent
         .deep_dive_task_context("deleted old_auth")
@@ -90,7 +92,7 @@ async fn deep_dive_returns_empty_when_keyword_not_found() {
     ];
 
     let provider = ScriptedProvider::new()
-        .then_text(r#"{"verdict":"pass","confidence":0.9,"findings":[],"summary":"ok"}"#)
+        .then_text(r#"{"verdict":"confirmed","confidence":0.9,"findings":[],"summary":"ok"}"#)
         .then_done();
     let agent = make_agent(provider, suspicious_diff(), task_memory);
 
@@ -113,7 +115,7 @@ async fn deep_dive_empty_query_returns_all_messages() {
     ];
 
     let provider = ScriptedProvider::new()
-        .then_text(r#"{"verdict":"pass","confidence":0.9,"findings":[],"summary":"ok"}"#)
+        .then_text(r#"{"verdict":"confirmed","confidence":0.9,"findings":[],"summary":"ok"}"#)
         .then_done();
     let agent = make_agent(provider, clean_diff(), task_memory);
 
@@ -129,7 +131,7 @@ async fn deep_dive_filters_by_keyword_case_insensitive() {
     ];
 
     let provider = ScriptedProvider::new()
-        .then_text(r#"{"verdict":"pass","confidence":0.9,"findings":[],"summary":"ok"}"#)
+        .then_text(r#"{"verdict":"confirmed","confidence":0.9,"findings":[],"summary":"ok"}"#)
         .then_done();
     let agent = make_agent(provider, suspicious_diff(), task_memory);
 
@@ -145,16 +147,15 @@ async fn audit_with_deep_dive_escalates_on_flawed_reasoning() {
         Message::assistant("not sure if anything depends on it"),
     ];
 
-    let response =
-        r#"{"verdict":"warn","confidence":0.5,"findings":[],"summary":"suspicious deletion"}"#;
+    let response = r#"{"verdict":"false_positive","confidence":0.5,"findings":[],"summary":"suspicious deletion"}"#;
     let provider = ScriptedProvider::new().then_text(response).then_done();
     let agent = make_agent(provider, suspicious_diff(), task_memory);
 
     let report = agent.audit_with_deep_dive().await.unwrap();
     assert_eq!(
         report.verdict,
-        opca_core::audit::AuditVerdict::Fail,
-        "flawed reasoning should escalate to fail"
+        opca_core::audit::AuditVerdict::NeedsFix,
+        "flawed reasoning should escalate to needs_fix"
     );
     assert!(
         !report.findings.is_empty(),
@@ -166,14 +167,14 @@ async fn audit_with_deep_dive_escalates_on_flawed_reasoning() {
 async fn audit_with_deep_dive_skipped_for_clean_diff() {
     let task_memory = vec![Message::assistant("I think this is wrong")];
 
-    let response = r#"{"verdict":"warn","confidence":0.5,"findings":[],"summary":"ok"}"#;
+    let response = r#"{"verdict":"false_positive","confidence":0.5,"findings":[],"summary":"ok"}"#;
     let provider = ScriptedProvider::new().then_text(response).then_done();
     let agent = make_agent(provider, clean_diff(), task_memory);
 
     let report = agent.audit_with_deep_dive().await.unwrap();
     assert_eq!(
         report.verdict,
-        opca_core::audit::AuditVerdict::Warn,
+        opca_core::audit::AuditVerdict::FalsePositive,
         "clean diff should not trigger deep dive escalation"
     );
     assert!(report.findings.is_empty());

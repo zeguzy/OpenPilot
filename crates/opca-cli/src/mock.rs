@@ -14,12 +14,25 @@ struct MockTask {
     rejected: bool,
 }
 
+#[derive(Debug, Clone)]
+struct MockChain {
+    display_id: String,
+    root_task_id: String,
+    prompt: String,
+    max_iterations: u32,
+    budget: f64,
+    active: bool,
+    iterations: u32,
+}
+
 #[derive(Default)]
 struct MockState {
     tasks: HashMap<String, MockTask>,
     counter: u64,
     subscribers: Vec<UnboundedSender<Notification>>,
     last_message: Option<String>,
+    chains: HashMap<String, MockChain>,
+    chain_counter: u64,
 }
 
 #[derive(Default)]
@@ -127,6 +140,27 @@ impl MockOrchestrator {
             .keys()
             .cloned()
             .collect()
+    }
+
+    #[must_use]
+    pub fn chain_ids(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("poisoned")
+            .chains
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    #[must_use]
+    pub fn is_chain_active(&self, chain_id: &str) -> bool {
+        self.state
+            .lock()
+            .expect("poisoned")
+            .chains
+            .get(chain_id)
+            .is_some_and(|c| c.active)
     }
 }
 
@@ -267,6 +301,97 @@ impl OrchestratorApi for MockOrchestrator {
             tx.send(crate::tui::app::StreamEvent::Done).ok();
         });
     }
+
+    fn start_continuation(
+        &self,
+        prompt: &str,
+        max_iterations: Option<u32>,
+        budget: Option<f64>,
+    ) -> String {
+        let task_id = self.dispatch(prompt);
+        let mut state = self.state.lock().expect("poisoned");
+        state.chain_counter += 1;
+        let display_id = format!("chain-{}", state.chain_counter);
+        let max_iter = max_iterations.unwrap_or(10);
+        let bud = budget.unwrap_or(5.0);
+        state.chains.insert(
+            display_id.clone(),
+            MockChain {
+                display_id: display_id.clone(),
+                root_task_id: task_id,
+                prompt: prompt.to_string(),
+                max_iterations: max_iter,
+                budget: bud,
+                active: true,
+                iterations: 0,
+            },
+        );
+        display_id
+    }
+
+    fn stop_continuation(&self, chain_id: &str) -> Result<usize, String> {
+        let mut state = self.state.lock().expect("poisoned");
+        if chain_id.eq_ignore_ascii_case("all") {
+            let mut count = 0usize;
+            for chain in state.chains.values_mut() {
+                if chain.active {
+                    chain.active = false;
+                    count += 1;
+                }
+            }
+            return Ok(count);
+        }
+        let chain = state
+            .chains
+            .get_mut(chain_id)
+            .ok_or_else(|| format!("chain '{chain_id}' not found"))?;
+        if !chain.active {
+            return Ok(0);
+        }
+        chain.active = false;
+        Ok(1)
+    }
+
+    fn continuation_status(&self, chain_id: Option<&str>) -> String {
+        let state = self.state.lock().expect("poisoned");
+        if let Some(id) = chain_id {
+            return match state.chains.get(id) {
+                Some(chain) => format_mock_chain(chain),
+                None => format!("No chain named '{id}'."),
+            };
+        }
+        if state.chains.is_empty() {
+            return "No continuation chains.".to_string();
+        }
+        let active_count = state.chains.values().filter(|c| c.active).count();
+        let mut out = format!(
+            "Continuation Chains ({} active of {} total):\n",
+            active_count,
+            state.chains.len()
+        );
+        let mut chains: Vec<&MockChain> = state.chains.values().collect();
+        chains.sort_by(|a, b| a.display_id.cmp(&b.display_id));
+        for chain in chains {
+            out.push_str("  ");
+            out.push_str(&format_mock_chain(chain));
+            out.push('\n');
+        }
+        out.trim_end().to_string()
+    }
+}
+
+fn format_mock_chain(chain: &MockChain) -> String {
+    let status = if chain.active { "active" } else { "stopped" };
+    format!(
+        "{} [{}] iter {}/{}, budget ${:.2}, root {} — {}",
+        chain.display_id,
+        status,
+        chain.iterations,
+        chain.max_iterations,
+        chain.budget,
+        chain.root_task_id,
+        chain.prompt,
+    )
 }
 
 fn extract_task_ref(lower: &str, prefixes: &[&str]) -> Option<String> {

@@ -101,7 +101,7 @@ impl AuditAgent {
     pub async fn audit_with_deep_dive(&self) -> Result<AuditReport> {
         let mut report = self.audit().await?;
 
-        if is_diff_suspicious(&self.diff) && report.verdict != AuditVerdict::Pass {
+        if is_diff_suspicious(&self.diff) && report.verdict != AuditVerdict::Confirmed {
             let deleted_query = self
                 .diff
                 .deleted
@@ -117,7 +117,7 @@ impl AuditAgent {
                     .collect::<Vec<_>>()
                     .join("\n");
                 if reasoning_is_flawed(&reasoning) {
-                    report.verdict = AuditVerdict::Fail;
+                    report.verdict = AuditVerdict::NeedsFix;
                     report.confidence = (report.confidence + 0.1).min(1.0);
                     report.findings.push(Finding {
                         severity: crate::focus::Severity::Blocking,
@@ -163,7 +163,7 @@ impl AuditAgent {
             "You are an Audit Agent reviewing a completed task's diff. \
              You must check these dimensions: [{dims}]. \
              Respond ONLY with a JSON object with fields: \
-             verdict (\"pass\"|\"warn\"|\"fail\"), confidence (0.0-1.0), \
+             verdict (\"confirmed\"|\"false_positive\"|\"needs_fix\"|\"needs_human_review\"), confidence (0.0-1.0), \
              findings (array of {{severity, location, issue}}), and summary (string)."
         )
     }

@@ -24,6 +24,7 @@ pub struct TaskEntry {
     pub context_snapshot: ContextSnapshot,
     pub dispatched: bool,
     pub join_handle: Option<JoinHandle<TaskOutcome>>,
+    pub parent_task_id: Option<String>,
 }
 
 impl TaskEntry {
@@ -164,6 +165,7 @@ mod tests {
             context_snapshot: Arc::new(Mutex::new(Vec::new())),
             dispatched,
             join_handle: None,
+            parent_task_id: None,
         }
     }
 
