@@ -100,7 +100,9 @@ mod tests {
         // The old prompt said "What does this file do? → Respond directly" which
         // is wrong because the orchestrator has no filesystem access.
         assert!(
-            !ORCHESTRATOR_SYSTEM.contains("Respond directly. Do NOT call dispatch_task (this is a question, not work)"),
+            !ORCHESTRATOR_SYSTEM.contains(
+                "Respond directly. Do NOT call dispatch_task (this is a question, not work)"
+            ),
             "prompt must not tell the orchestrator to answer file questions directly"
         );
     }
