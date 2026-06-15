@@ -21,8 +21,13 @@ pub mod focus;
 pub mod lifecycle;
 pub mod memory;
 pub mod orchestrator;
+pub mod prompt_system;
 pub mod provider;
 pub mod session;
+
+#[cfg(feature = "sub-agents")]
+pub mod sub_agent;
+
 pub mod task;
 pub mod tools;
 pub mod workspace;

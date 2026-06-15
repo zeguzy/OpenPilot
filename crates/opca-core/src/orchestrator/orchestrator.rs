@@ -15,7 +15,7 @@ use crate::task::{SteeringMessage, Task, TaskHandle, TaskOutcome};
 use crate::tools::{ToolContext, ToolRegistry};
 use crate::workspace::WorkspaceManager;
 
-use super::registry::{ContextSnapshot, TaskEntry, TaskRegistry};
+use super::registry::{ContextSnapshot, SubTaskRecord, TaskEntry, TaskRegistry};
 
 pub struct Orchestrator {
     provider: Arc<dyn Provider>,
@@ -51,6 +51,10 @@ impl Orchestrator {
         let (heartbeat_tx, heartbeat_rx) = mpsc::unbounded_channel();
         let (highlight_tx, highlight_rx) = mpsc::unbounded_channel();
         let (output_tx, output_rx) = mpsc::unbounded_channel();
+        tracing::info!(
+            prompt_version = crate::prompt_system::orchestrator::PROMPT_VERSION,
+            "prompt template loaded"
+        );
         Self {
             provider,
             memory,
@@ -134,7 +138,7 @@ impl Orchestrator {
         description: &str,
         focus: Vec<String>,
         estimated_files: Vec<PathBuf>,
-        _parent_task_id: Option<String>,
+        parent_task_id: Option<String>,
     ) -> Result<String> {
         let task_id = self.next_task_id();
         let focus_contract = FocusContract::new(focus);
@@ -154,7 +158,7 @@ impl Orchestrator {
                 context_snapshot,
                 dispatched: false,
                 join_handle: None,
-                parent_task_id: None,
+                parent_task_id,
             });
             return Ok(task_id);
         }
@@ -227,10 +231,51 @@ impl Orchestrator {
             context_snapshot,
             dispatched: true,
             join_handle: Some(join_handle),
-            parent_task_id: None,
+            parent_task_id,
         });
 
         Ok(task_id)
+    }
+
+    /// Returns IDs and statuses of all tasks whose `parent_task_id`
+    /// matches the given parent. Used by the `/subtasks` slash command
+    /// (behind the `sub-agents` feature).
+    #[must_use]
+    pub fn subtasks_of(&self, parent_task_id: &str) -> Vec<SubTaskRecord> {
+        self.tasks
+            .iter()
+            .filter(|(_, e)| e.parent_task_id.as_deref() == Some(parent_task_id))
+            .map(|(_, e)| SubTaskRecord {
+                id: e.id.clone(),
+                description: e.description.clone(),
+                status: e.status,
+                progress: e.latest_heartbeat.as_ref().map_or(0.0, |hb| hb.progress),
+                summary: e
+                    .latest_heartbeat
+                    .as_ref()
+                    .map_or(String::new(), |hb| hb.summary.clone()),
+            })
+            .collect()
+    }
+
+    /// Returns all tasks that have a `parent_task_id` set (i.e. all
+    /// sub-tasks across all parents).
+    #[must_use]
+    pub fn list_all_subtasks(&self) -> Vec<SubTaskRecord> {
+        self.tasks
+            .iter()
+            .filter(|(_, e)| e.parent_task_id.is_some())
+            .map(|(_, e)| SubTaskRecord {
+                id: e.id.clone(),
+                description: e.description.clone(),
+                status: e.status,
+                progress: e.latest_heartbeat.as_ref().map_or(0.0, |hb| hb.progress),
+                summary: e
+                    .latest_heartbeat
+                    .as_ref()
+                    .map_or(String::new(), |hb| hb.summary.clone()),
+            })
+            .collect()
     }
 
     pub fn drain_heartbeats(&mut self) {

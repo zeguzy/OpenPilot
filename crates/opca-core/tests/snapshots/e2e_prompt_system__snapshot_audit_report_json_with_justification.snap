@@ -1,0 +1,20 @@
+---
+source: crates/opca-core/tests/e2e_prompt_system.rs
+expression: json
+---
+{
+  "report": {
+    "task_id": "task-audit-1",
+    "verdict": "needs_fix",
+    "confidence": 0.85,
+    "findings": [
+      {
+        "severity": "warning",
+        "location": "src/lib.rs:42",
+        "issue": "Unhandled Result variant in match expression"
+      }
+    ],
+    "summary": "Found one major issue requiring a fix.",
+    "justification": "Decision tree rule 4: major finding in src/lib.rs:42 mandates NeedsFix verdict."
+  }
+}

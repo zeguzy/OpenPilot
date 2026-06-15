@@ -1,0 +1,19 @@
+---
+source: crates/opca-core/src/audit/report.rs
+assertion_line: 181
+expression: report
+---
+{
+  "task_id": "task_001",
+  "verdict": "needs_fix",
+  "confidence": 0.85,
+  "findings": [
+    {
+      "severity": "blocking",
+      "location": "src/lib.rs:42",
+      "issue": "unwrap() in library code"
+    }
+  ],
+  "summary": "Found 1 major issue",
+  "justification": "Applied decision tree rule 2: major finding in src/lib.rs:42 mandates NeedsFix."
+}

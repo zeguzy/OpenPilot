@@ -36,10 +36,10 @@
 
 - [x] 5.1 Unit tests for `continuation/` module: ContinuationBudget exhaustion (all 4 dimensions), ContinuationChain lifecycle, NoProgressDetector (empty diff, identical diff, repeated findings), DefaultContinuationPolicy (each AuditVerdict mapping). Use rstest for parametric cases, proptest for budget invariant (accumulated cost never exceeds max).
 - [x] 5.2 Integration test: CompletionPipeline with Continue outcome. ScriptedProvider returns responses that trigger NeedsFix audit → verify Continue outcome produced → verify continuation Task dispatched with correct prompt seed.
-- [ ] 5.3 E2E test: full continuation chain lifecycle. Script: Task A completes (NeedsFix audit) → iteration 2 dispatched → iteration 2 completes (Confirmed audit) → chain terminates. Verify: chain status transitions Active→Terminated(ConfirmedComplete), 2 IterationRecords, budget correct.
-- [ ] 5.4 E2E test: budget exhaustion. Script: chain with max_iterations=2, each iteration returns NeedsFix → verify chain terminates after iteration 2 with BudgetExhausted(Iterations), user notification includes iteration count.
-- [ ] 5.5 E2E test: no-progress detection. Script: 2 consecutive iterations with empty diffs → verify chain terminates with NoProgress before reaching max_iterations.
-- [ ] 5.6 E2E test: user cancellation. Start chain, run `/stop-continuation` mid-iteration → verify chain terminates with UserCancelled, running Task completes normally.
+- [x] 5.3 E2E test: full continuation chain lifecycle. Script: Task A completes (NeedsFix audit) → iteration 2 dispatched → iteration 2 completes (Confirmed audit) → chain terminates. Verify: chain status transitions Active→Terminated(ConfirmedComplete), 2 IterationRecords, budget correct.
+- [x] 5.4 E2E test: budget exhaustion. Script: chain with max_iterations=2, each iteration returns NeedsFix → verify chain terminates after iteration 2 with BudgetExhausted(Iterations), user notification includes iteration count.
+- [x] 5.5 E2E test: no-progress detection. Script: 2 consecutive iterations with empty diffs → verify chain terminates with NoProgress before reaching max_iterations.
+- [x] 5.6 E2E test: user cancellation. Start chain, run `/stop-continuation` mid-iteration → verify chain terminates with UserCancelled, running Task completes normally.
 - [x] 5.7 Snapshot tests (`insta`) for: continuation prompt seed template, chain termination notifications (each ChainTerminationReason), `/continue status` output format. Review with `cargo insta review`.
 - [x] 5.8 Proptest: state machine invariant—no continuation iteration ever reuses an existing TaskId; continuation chain iterations are monotonically numbered; terminated chains never dispatch new Tasks.
 

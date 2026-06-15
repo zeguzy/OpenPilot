@@ -13,5 +13,6 @@ expression: report
       "issue": "Ambiguous refactor, cannot verify correctness"
     }
   ],
-  "summary": "Cannot determine correctness automatically"
+  "summary": "Cannot determine correctness automatically",
+  "justification": "Refactor is too ambiguous to verify automatically; escalating."
 }

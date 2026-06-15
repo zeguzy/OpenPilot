@@ -209,6 +209,15 @@ async fn run_tui(orchestrator: Arc<dyn OrchestratorApi>, model: String) {
                 KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     app.should_quit = true;
                 }
+                KeyCode::PageUp => {
+                    app.scroll_up(10);
+                }
+                KeyCode::PageDown => {
+                    app.scroll_down(10);
+                }
+                KeyCode::Home => {
+                    app.scroll_to_bottom();
+                }
                 _ => {
                     input.textarea.input(key);
                 }

@@ -41,9 +41,15 @@ impl AuditAgent {
         focus: Vec<String>,
         model_tier: ModelTier,
     ) -> Self {
+        let task_id = task_id.into();
+        tracing::info!(
+            prompt_version = crate::prompt_system::audit::PROMPT_VERSION,
+            task_id = %task_id,
+            "prompt template loaded"
+        );
         Self {
             provider,
-            task_id: task_id.into(),
+            task_id,
             workspace_path,
             diff,
             task_memory,
@@ -158,14 +164,7 @@ impl AuditAgent {
     }
 
     fn build_system_prompt(&self) -> String {
-        let dims = self.focus.join(", ");
-        format!(
-            "You are an Audit Agent reviewing a completed task's diff. \
-             You must check these dimensions: [{dims}]. \
-             Respond ONLY with a JSON object with fields: \
-             verdict (\"confirmed\"|\"false_positive\"|\"needs_fix\"|\"needs_human_review\"), confidence (0.0-1.0), \
-             findings (array of {{severity, location, issue}}), and summary (string)."
-        )
+        crate::prompt_system::audit::audit_prompt(&self.focus)
     }
 
     fn build_audit_request(&self) -> String {
@@ -192,7 +191,9 @@ impl AuditAgent {
              Added files ({}): {}\n\
              Modified files ({}): {}\n\
              Deleted files ({}): {}\n\n\
-             Provide your audit verdict as JSON.",
+             Provide your audit verdict as JSON.\n\
+             Provide a `justification` field in your JSON response explaining WHY you chose this \
+             verdict, citing specific findings by severity and location. Do not just restate the summary.",
             self.task_id,
             self.diff.added.len(),
             added.join(", "),

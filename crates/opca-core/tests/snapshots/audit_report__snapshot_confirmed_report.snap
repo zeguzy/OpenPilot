@@ -7,5 +7,6 @@ expression: report
   "verdict": "confirmed",
   "confidence": 0.95,
   "findings": [],
-  "summary": "All checks passed, diff is clean"
+  "summary": "All checks passed, diff is clean",
+  "justification": "Decision tree rule 4: only info/minor findings, confidence ≥ 0.5."
 }

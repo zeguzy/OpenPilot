@@ -47,6 +47,8 @@ pub async fn freeze(
         progress: 1.0,
         summary: summary.clone(),
         timestamp: 0,
+        todo: None,
+        subtasks: Vec::new(),
     };
     let _ = heartbeat_tx.send(hb);
 

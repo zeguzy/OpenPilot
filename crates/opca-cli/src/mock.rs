@@ -25,6 +25,16 @@ struct MockChain {
     iterations: u32,
 }
 
+#[cfg(feature = "sub-agents")]
+#[derive(Debug, Clone)]
+struct MockSubTask {
+    id: String,
+    description: String,
+    status: TaskStatus,
+    progress: f64,
+    summary: String,
+}
+
 #[derive(Default)]
 struct MockState {
     tasks: HashMap<String, MockTask>,
@@ -33,6 +43,8 @@ struct MockState {
     last_message: Option<String>,
     chains: HashMap<String, MockChain>,
     chain_counter: u64,
+    #[cfg(feature = "sub-agents")]
+    subtasks: HashMap<String, Vec<MockSubTask>>,
 }
 
 #[derive(Default)]
@@ -162,6 +174,30 @@ impl MockOrchestrator {
             .get(chain_id)
             .is_some_and(|c| c.active)
     }
+
+    /// Seeds a sub-task for testing (behind the `sub-agents` feature).
+    #[cfg(feature = "sub-agents")]
+    pub fn seed_subtask(
+        &self,
+        parent_id: &str,
+        sub_id: &str,
+        description: &str,
+        status: TaskStatus,
+        progress: f64,
+    ) {
+        let mut state = self.state.lock().expect("poisoned");
+        state
+            .subtasks
+            .entry(parent_id.to_string())
+            .or_default()
+            .push(MockSubTask {
+                id: sub_id.to_string(),
+                description: description.to_string(),
+                status,
+                progress,
+                summary: format!("{status}"),
+            });
+    }
 }
 
 fn broadcast(state: &mut MockState, notif: Notification) {
@@ -280,6 +316,29 @@ impl OrchestratorApi for MockOrchestrator {
             .count()
     }
 
+    fn answer_task(&self, task_id: &str, choice: &str) -> Result<(), String> {
+        let mut state = self.state.lock().expect("poisoned");
+        let task = state
+            .tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("task '{task_id}' not found"))?;
+        if task.info.status != TaskStatus::Waiting {
+            return Err(format!(
+                "task '{task_id}' is {} (must be Waiting to answer)",
+                task.info.status
+            ));
+        }
+        task.info.status = TaskStatus::OnIt;
+        task.info.summary = format!("answered: {choice}");
+        let notif = Notification::StatusChanged {
+            task_id: task_id.to_string(),
+            status: TaskStatus::OnIt,
+            summary: format!("resumed with answer: {choice}"),
+        };
+        broadcast(&mut state, notif);
+        Ok(())
+    }
+
     fn subscribe(&self) -> UnboundedReceiver<Notification> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.state.lock().expect("poisoned").subscribers.push(tx);
@@ -377,6 +436,24 @@ impl OrchestratorApi for MockOrchestrator {
             out.push('\n');
         }
         out.trim_end().to_string()
+    }
+
+    #[cfg(feature = "sub-agents")]
+    fn list_subtasks(&self, parent_task_id: Option<&str>) -> Vec<crate::SubTaskInfo> {
+        let state = self.state.lock().expect("poisoned");
+        state
+            .subtasks
+            .iter()
+            .filter(|(pid, _)| parent_task_id.is_none_or(|p| pid.as_str() == p))
+            .flat_map(|(_, subs)| subs.iter())
+            .map(|s| crate::SubTaskInfo {
+                id: s.id.clone(),
+                description: s.description.clone(),
+                status: s.status,
+                progress: s.progress,
+                summary: s.summary.clone(),
+            })
+            .collect()
     }
 }
 

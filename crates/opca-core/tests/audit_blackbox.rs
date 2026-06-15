@@ -152,3 +152,29 @@ async fn black_box_provider_exhausted_returns_error() {
     let result = agent.audit().await;
     assert!(result.is_err());
 }
+
+#[tokio::test]
+async fn audit_with_major_finding_produces_needs_fix_with_justification() {
+    let response = r#"{
+        "verdict": "needs_fix",
+        "confidence": 0.85,
+        "findings": [
+            {"severity": "blocking", "location": "src/lib.rs:42", "issue": "unwrap() in library code"}
+        ],
+        "summary": "Found 1 major issue",
+        "justification": "Applied decision tree rule 2: major finding in src/lib.rs:42 mandates NeedsFix."
+    }"#;
+    let provider = ScriptedProvider::new().then_text(response).then_done();
+    let agent = make_agent(provider, clean_diff(), vec![]);
+
+    let report = agent.audit().await.unwrap();
+
+    assert_eq!(report.verdict, AuditVerdict::NeedsFix);
+    assert!(
+        report.justification.contains("major"),
+        "justification should cite the major finding: {}",
+        report.justification
+    );
+    assert_eq!(report.findings.len(), 1);
+    assert_eq!(report.findings[0].severity, Severity::Blocking);
+}

@@ -215,7 +215,9 @@ fn complete_task_emits_notification() {
             assert_eq!(task_id, id);
             assert_eq!(files_modified, 5);
         }
-        other @ Notification::StatusChanged { .. } => panic!("expected Completed, got {other:?}"),
+        other @ (Notification::StatusChanged { .. } | Notification::Clarification { .. }) => {
+            panic!("expected Completed, got {other:?}")
+        }
     }
 }
 
@@ -819,4 +821,479 @@ fn repl_help_includes_continue_and_stop_commands() {
     let text = buffer.joined();
     assert!(text.contains("/continue"));
     assert!(text.contains("/stop-continuation"));
+}
+
+// ---------------------------------------------------------------------------
+// stream_foreground streaming regression tests
+//
+// These guard against the bug where a normal (non-dispatch) reply was buffered
+// until the first newline and only flushed at Done — making short answers look
+// non-streaming. We drive RealOrchestrator with a ScriptedProvider and assert
+// on the StreamEvent sequence.
+// ---------------------------------------------------------------------------
+
+use std::time::Duration;
+
+use opca_cli::RealOrchestrator;
+use opca_cli::tui::app::StreamEvent;
+use opca_core::di::{StdClock, StdFileSystem, StdProcess};
+use opca_test_utils::ScriptedProvider;
+
+fn real_orch_with_provider(provider: ScriptedProvider) -> Arc<RealOrchestrator> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    Arc::new(RealOrchestrator::new(
+        Arc::new(provider),
+        dir.path().to_path_buf(),
+        Arc::new(StdClock),
+        Arc::new(StdFileSystem),
+        Arc::new(StdProcess),
+    ))
+}
+
+/// A normal multi-token reply must arrive as multiple Deltas (streaming), not
+/// one blob at Done. This is the direct regression test for the buffering bug.
+#[tokio::test]
+async fn normal_reply_streams_token_by_token() {
+    let provider = ScriptedProvider::new()
+        .then_text("Hello")
+        .then_text(", ")
+        .then_text("world!")
+        .then_done();
+    let orch = real_orch_with_provider(provider);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    orch.stream_foreground("hi", tx);
+
+    let events = collect_stream_events(&mut rx).await;
+
+    let deltas: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Delta(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect();
+
+    // Key assertion: more than one Delta means it streamed, didn't blob.
+    assert!(
+        deltas.len() >= 2,
+        "expected streaming (>=2 deltas), got {deltas:?}"
+    );
+    assert_eq!(deltas.concat(), "Hello, world!");
+    assert!(matches!(events.last(), Some(StreamEvent::Done)));
+}
+
+/// A short single-token reply with no newline must still flush (it used to be
+/// swallowed until Done because there was never a `\n` to trigger the check).
+#[tokio::test]
+async fn short_reply_without_newline_still_streams() {
+    let provider = ScriptedProvider::new().then_text("ok").then_done();
+    let orch = real_orch_with_provider(provider);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    orch.stream_foreground("ping", tx);
+
+    let events = collect_stream_events(&mut rx).await;
+
+    // The "ok" must reach the user as a Delta (not be swallowed).
+    let has_ok_delta = events
+        .iter()
+        .any(|e| matches!(e, StreamEvent::Delta(s) if s == "ok"));
+    assert!(has_ok_delta, "short reply was not streamed: {events:?}");
+}
+
+/// A `dispatch_task` tool call must produce a Dispatch event with the prompt.
+#[tokio::test]
+async fn dispatch_task_tool_call_emits_dispatch_event() {
+    let provider = ScriptedProvider::new()
+        .then_tool_call(
+            "dispatch_task",
+            serde_json::json!({"prompt": "refactor the auth module"}),
+        )
+        .then_done();
+    let orch = real_orch_with_provider(provider);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    orch.stream_foreground("refactor auth", tx);
+
+    let events = collect_stream_events(&mut rx).await;
+
+    let dispatches: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Dispatch(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        dispatches,
+        vec!["refactor the auth module".to_string()],
+        "expected exactly one Dispatch with the prompt from the tool call"
+    );
+}
+
+/// A text-only reply (no tool calls) must NOT produce a Dispatch event.
+#[tokio::test]
+async fn text_only_reply_no_dispatch() {
+    let provider = ScriptedProvider::new()
+        .then_text("This is a direct answer.")
+        .then_done();
+    let orch = real_orch_with_provider(provider);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    orch.stream_foreground("what does this do?", tx);
+
+    let events = collect_stream_events(&mut rx).await;
+
+    let has_dispatch = events.iter().any(|e| matches!(e, StreamEvent::Dispatch(_)));
+    assert!(!has_dispatch, "text-only reply must not trigger Dispatch");
+    assert!(matches!(events.last(), Some(StreamEvent::Done)));
+}
+
+/// Legacy `OPCA_DISPATCH:` text in model output must be treated as ordinary
+/// text — NOT trigger a Dispatch. This proves the prefix-matching code path
+/// is gone.
+#[tokio::test]
+async fn legacy_prefix_in_text_does_not_dispatch() {
+    let provider = ScriptedProvider::new()
+        .then_text("OPCA_DISPATCH: refactor the auth module\n")
+        .then_done();
+    let orch = real_orch_with_provider(provider);
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    orch.stream_foreground("refactor auth", tx);
+
+    let events = collect_stream_events(&mut rx).await;
+
+    let has_dispatch = events.iter().any(|e| matches!(e, StreamEvent::Dispatch(_)));
+    assert!(
+        !has_dispatch,
+        "legacy OPCA_DISPATCH text must NOT trigger Dispatch: {events:?}"
+    );
+
+    // The text should be forwarded as regular Delta content.
+    let all_text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Delta(s) => Some(s.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        all_text.contains("OPCA_DISPATCH"),
+        "legacy prefix text should be shown to user as ordinary text"
+    );
+    assert!(matches!(events.last(), Some(StreamEvent::Done)));
+}
+
+/// Drain `StreamEvent`s until a terminal event (Done/Dispatch/Error) arrives,
+/// with a 2s timeout so a regression that never flushes fails fast.
+async fn collect_stream_events(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+) -> Vec<StreamEvent> {
+    let mut out = Vec::new();
+    while let Ok(Some(ev)) = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await {
+        let terminal = matches!(
+            ev,
+            StreamEvent::Done | StreamEvent::Dispatch(_) | StreamEvent::Error(_)
+        );
+        out.push(ev);
+        if terminal {
+            break;
+        }
+    }
+    out
+}
+
+// ── G9: Clarification Protocol tests ──────────────────────────────────
+
+#[test]
+fn slash_answer_parses_task_id_and_choice() {
+    let cmd = SlashCommand::parse("/answer task-0 use JWT")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Answer {
+            task_id: "task-0".to_string(),
+            choice: "use JWT".to_string(),
+        }
+    );
+}
+
+#[test]
+fn slash_answer_requires_task_id() {
+    let result = SlashCommand::parse("/answer");
+    assert!(matches!(result, Err(SlashError::MissingTaskId(_))));
+}
+
+#[test]
+fn slash_answer_requires_choice() {
+    let result = SlashCommand::parse("/answer task-0");
+    assert!(matches!(result, Err(SlashError::MissingPrompt(_))));
+}
+
+#[test]
+fn slash_answer_strips_quotes_around_choice() {
+    let cmd = SlashCommand::parse("/answer task-1 \"option A\"")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cmd,
+        SlashCommand::Answer {
+            task_id: "task-1".to_string(),
+            choice: "option A".to_string(),
+        }
+    );
+}
+
+#[test]
+fn help_text_documents_answer_command() {
+    assert!(opca_cli::commands::HELP_TEXT.contains("/answer"));
+}
+
+#[test]
+fn mock_answer_task_requires_waiting_status() {
+    let mock = MockOrchestrator::new();
+    let id = mock.dispatch("work");
+    let err = mock.answer_task(&id, "yes").unwrap_err();
+    assert!(err.contains("Waiting"));
+}
+
+#[test]
+fn mock_answer_task_succeeds_for_waiting_task() {
+    let mock = MockOrchestrator::new();
+    let id = mock.dispatch("work");
+    mock.push_heartbeat(&id, TaskStatus::Waiting, 0.0, "need clarification");
+    mock.answer_task(&id, "go with JWT")
+        .expect("answer should succeed");
+    let info = mock.task_status(&id).unwrap();
+    assert_eq!(info.status, TaskStatus::OnIt);
+    assert!(info.summary.contains("go with JWT"));
+}
+
+#[test]
+fn repl_answer_command_prints_confirmation() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let id = mock.dispatch("work");
+    mock.push_heartbeat(&id, TaskStatus::Waiting, 0.0, "need info");
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line(&format!("/answer {id} use JWT"));
+    let text = buffer.joined();
+    assert!(text.contains("answered"));
+    assert!(text.contains("use JWT"));
+}
+
+#[test]
+fn repl_answer_on_non_waiting_errors() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let id = mock.dispatch("work");
+    let (repl, buffer) = make_repl(mock);
+    repl.handle_line(&format!("/answer {id} yes"));
+    let text = buffer.joined();
+    assert!(text.contains("cannot answer"));
+}
+
+// ── G9: Context-Completion Gate tests ─────────────────────────────────
+
+#[test]
+fn dispatch_gate_allows_sufficient_request() {
+    let result = opca_core::orchestrator::can_dispatch("implement JWT auth for the API", 0);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn dispatch_gate_rejects_missing_verb() {
+    let result = opca_core::orchestrator::can_dispatch("hello there, how are you?", 0);
+    assert_eq!(
+        result,
+        Err(opca_core::orchestrator::DispatchRejection::NoImplementationVerb)
+    );
+}
+
+#[test]
+fn dispatch_gate_rejects_vague_scope() {
+    let result = opca_core::orchestrator::can_dispatch("fix it", 0);
+    assert_eq!(
+        result,
+        Err(opca_core::orchestrator::DispatchRejection::ScopeTooVague)
+    );
+}
+
+#[test]
+fn dispatch_gate_rejects_pending_specialist() {
+    let result = opca_core::orchestrator::can_dispatch("implement the new feature properly", 1);
+    assert_eq!(
+        result,
+        Err(opca_core::orchestrator::DispatchRejection::SpecialistPending)
+    );
+}
+
+#[test]
+fn dispatch_gate_rejects_ambiguous_add_tests() {
+    let result = opca_core::orchestrator::can_dispatch("add tests", 0);
+    assert!(result.is_err());
+}
+
+// ── G9: Clarification notification rendering ──────────────────────────
+
+#[tokio::test]
+async fn clarification_notification_renders_in_repl_loop() {
+    let mock = Arc::new(MockOrchestrator::new());
+    let id = mock.dispatch("work");
+    let buffer = Arc::new(BufferOutput::new());
+    let output: Arc<dyn Output> = buffer.clone();
+    let repl = Arc::new(Repl::new(mock.clone(), output));
+
+    let (input_tx, input_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let notif_rx = mock.subscribe();
+
+    mock.push_heartbeat(
+        &id,
+        TaskStatus::Waiting,
+        0.0,
+        "Waiting for clarification: JWT or sessions?",
+    );
+
+    let repl_clone = repl.clone();
+    let handle = tokio::spawn(async move {
+        opca_cli::repl::run_main_loop_for_test(repl_clone, input_rx, notif_rx).await;
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let text = buffer.joined();
+    assert!(
+        text.contains("waiting") || text.contains("Waiting"),
+        "clarification notification should be rendered: got {text}"
+    );
+    assert!(
+        text.contains("JWT or sessions?"),
+        "question text should appear in output: got {text}"
+    );
+    assert!(
+        text.contains(&id),
+        "task id should appear in notification: got {text}"
+    );
+
+    input_tx.send(String::new()).ok();
+    handle.abort();
+}
+
+// ── Sub-Agent feature tests (behind `sub-agents` feature flag) ──────────
+
+#[cfg(feature = "sub-agents")]
+mod sub_agents {
+    use super::*;
+    use opca_cli::SubTaskInfo;
+
+    #[test]
+    fn slash_subtasks_parses_no_arg() {
+        let cmd = SlashCommand::parse("/subtasks").unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            SlashCommand::Subtasks {
+                parent_task_id: None
+            }
+        );
+    }
+
+    #[test]
+    fn slash_subtasks_parses_with_parent() {
+        let cmd = SlashCommand::parse("/subtasks task-0").unwrap().unwrap();
+        assert_eq!(
+            cmd,
+            SlashCommand::Subtasks {
+                parent_task_id: Some("task-0".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn slash_subtasks_renders_empty() {
+        let mock = Arc::new(MockOrchestrator::new());
+        let (repl, buffer) = make_repl(mock);
+        repl.handle_line("/subtasks");
+        assert!(buffer.joined().contains("No sub-tasks."));
+    }
+
+    #[test]
+    fn slash_subtasks_renders_seeded_subtasks() {
+        let mock = Arc::new(MockOrchestrator::new());
+        mock.seed_subtask("task-0", "sub-1", "find deprecated", TaskStatus::OnIt, 0.5);
+        mock.seed_subtask("task-0", "sub-2", "write tests", TaskStatus::Pondering, 0.2);
+        let (repl, buffer) = make_repl(mock);
+        repl.handle_line("/subtasks task-0");
+        let out = buffer.joined();
+        assert!(out.contains("sub-1"), "should list sub-1: {out}");
+        assert!(out.contains("sub-2"), "should list sub-2: {out}");
+        assert!(
+            out.contains("find deprecated"),
+            "should show description: {out}"
+        );
+    }
+
+    #[test]
+    fn slash_subtasks_filters_by_parent() {
+        let mock = Arc::new(MockOrchestrator::new());
+        mock.seed_subtask("task-0", "sub-1", "work A", TaskStatus::OnIt, 0.1);
+        mock.seed_subtask("task-1", "sub-2", "work B", TaskStatus::OnIt, 0.9);
+        let (repl, buffer) = make_repl(mock);
+        repl.handle_line("/subtasks task-0");
+        let out = buffer.joined();
+        assert!(
+            out.contains("sub-1"),
+            "should include task-0's subtask: {out}"
+        );
+        assert!(
+            !out.contains("sub-2"),
+            "should NOT include task-1's subtask: {out}"
+        );
+    }
+
+    #[test]
+    fn slash_subtasks_all_when_no_parent() {
+        let mock = Arc::new(MockOrchestrator::new());
+        mock.seed_subtask("task-0", "sub-1", "work A", TaskStatus::OnIt, 0.1);
+        mock.seed_subtask("task-1", "sub-2", "work B", TaskStatus::OnIt, 0.9);
+        let (repl, buffer) = make_repl(mock);
+        repl.handle_line("/subtasks");
+        let out = buffer.joined();
+        assert!(out.contains("sub-1"), "should include all: {out}");
+        assert!(out.contains("sub-2"), "should include all: {out}");
+    }
+
+    #[test]
+    fn mock_list_subtasks_returns_subtask_info() {
+        let mock = MockOrchestrator::new();
+        mock.seed_subtask("task-0", "sub-1", "test work", TaskStatus::Delivered, 1.0);
+        let subs: Vec<SubTaskInfo> = mock.list_subtasks(Some("task-0"));
+        assert_eq!(subs.len(), 1);
+        assert_eq!(subs[0].id, "sub-1");
+        assert_eq!(subs[0].status, TaskStatus::Delivered);
+        assert!((subs[0].progress - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn help_text_includes_subtasks() {
+        use opca_cli::commands::HELP_TEXT;
+        assert!(
+            HELP_TEXT.contains("/subtasks"),
+            "HELP_TEXT should list /subtasks"
+        );
+    }
+}
+
+#[cfg(not(feature = "sub-agents"))]
+mod no_sub_agents {
+    use super::*;
+
+    #[test]
+    fn slash_subtasks_not_recognized_without_feature() {
+        let result = SlashCommand::parse("/subtasks");
+        assert!(
+            result.is_err(),
+            "/subtasks should not be recognized without the feature"
+        );
+    }
 }

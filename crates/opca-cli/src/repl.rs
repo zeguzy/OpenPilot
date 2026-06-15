@@ -1,6 +1,9 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+#[cfg(feature = "sub-agents")]
+use std::fmt::Write;
+
 use opca_core::lifecycle::TaskStatus;
 use reedline::{DefaultPrompt, Prompt, PromptEditMode, PromptHistorySearch, Reedline, Signal};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -131,6 +134,15 @@ impl Repl {
                     Err(e) => self.output.print_line(&format!("cannot reject: {e}")),
                 }
             }
+            SlashCommand::Answer { task_id, choice } => {
+                match self.orchestrator.answer_task(&task_id, &choice) {
+                    Ok(()) => {
+                        self.output
+                            .print_line(&format!("↻ answered task {task_id}: {choice}"));
+                    }
+                    Err(e) => self.output.print_line(&format!("cannot answer: {e}")),
+                }
+            }
             SlashCommand::Tasks => {
                 let tasks = self.orchestrator.list_tasks();
                 self.output.print_line(&render_task_list(&tasks));
@@ -156,43 +168,65 @@ impl Repl {
             SlashCommand::Help => {
                 self.output.print_line(HELP_TEXT);
             }
-            SlashCommand::Continue { action } => match action {
-                ContinueAction::Start {
-                    prompt,
-                    max_iterations,
-                    budget,
-                } => {
-                    let chain_id =
-                        self.orchestrator
-                            .start_continuation(&prompt, max_iterations, budget);
-                    self.output.print_line(&format!(
-                        "🔗 continuation chain {chain_id} started — {prompt}"
-                    ));
-                }
-                ContinueAction::Status { chain_id } => {
-                    let report = self.orchestrator.continuation_status(chain_id.as_deref());
-                    self.output.print_line(&report);
-                }
-            },
-            SlashCommand::StopContinuation { target } => match target {
-                StopTarget::All => match self.orchestrator.stop_continuation("all") {
-                    Ok(0) => self.output.print_line("no active continuation chains"),
-                    Ok(n) => self
-                        .output
-                        .print_line(&format!("✗ stopped {n} continuation chain(s)")),
-                    Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
-                },
-                StopTarget::One(id) => match self.orchestrator.stop_continuation(&id) {
-                    Ok(0) => self.output.print_line(&format!("chain {id} is not active")),
-                    Ok(_) => self
-                        .output
-                        .print_line(&format!("✗ stopped continuation chain {id}")),
-                    Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
-                },
-            },
+            SlashCommand::Continue { action } => self.run_continue(action),
+            SlashCommand::StopContinuation { target } => self.run_stop_continuation(target),
             SlashCommand::Quit => return HandleOutcome::Quit,
+            #[cfg(feature = "sub-agents")]
+            SlashCommand::Subtasks { parent_task_id } => {
+                self.run_subtasks(parent_task_id);
+            }
         }
         HandleOutcome::Continue
+    }
+
+    fn run_continue(&self, action: ContinueAction) {
+        match action {
+            ContinueAction::Start {
+                prompt,
+                max_iterations,
+                budget,
+            } => {
+                let chain_id =
+                    self.orchestrator
+                        .start_continuation(&prompt, max_iterations, budget);
+                self.output.print_line(&format!(
+                    "🔗 continuation chain {chain_id} started — {prompt}"
+                ));
+            }
+            ContinueAction::Status { chain_id } => {
+                let report = self.orchestrator.continuation_status(chain_id.as_deref());
+                self.output.print_line(&report);
+            }
+        }
+    }
+
+    fn run_stop_continuation(&self, target: StopTarget) {
+        match target {
+            StopTarget::All => match self.orchestrator.stop_continuation("all") {
+                Ok(0) => self.output.print_line("no active continuation chains"),
+                Ok(n) => self
+                    .output
+                    .print_line(&format!("✗ stopped {n} continuation chain(s)")),
+                Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
+            },
+            StopTarget::One(id) => match self.orchestrator.stop_continuation(&id) {
+                Ok(0) => self.output.print_line(&format!("chain {id} is not active")),
+                Ok(_) => self
+                    .output
+                    .print_line(&format!("✗ stopped continuation chain {id}")),
+                Err(e) => self.output.print_line(&format!("cannot stop: {e}")),
+            },
+        }
+    }
+
+    #[cfg(feature = "sub-agents")]
+    fn run_subtasks(&self, parent_task_id: Option<String>) {
+        let subs = self.orchestrator.list_subtasks(parent_task_id.as_deref());
+        if subs.is_empty() {
+            self.output.print_line("No sub-tasks.");
+        } else {
+            self.output.print_line(&render_subtask_list(&subs));
+        }
     }
 
     fn run_message(&self, message: &str) -> HandleOutcome {
@@ -248,6 +282,27 @@ impl Repl {
                 self.output
                     .print_line(&format!("{} {task_id} → {status}: {short}", status.emoji()));
             }
+            Notification::Clarification {
+                task_id,
+                question,
+                options,
+                timeout_secs,
+            } => {
+                let mins = timeout_secs / 60;
+                let opts = if options.is_empty() {
+                    String::new()
+                } else {
+                    let items: Vec<String> = options
+                        .iter()
+                        .enumerate()
+                        .map(|(i, opt)| format!("  {}. {opt}", i + 1))
+                        .collect();
+                    format!("\n{}", items.join("\n"))
+                };
+                self.output.print_line(&format!(
+                    "\u{1fae5} Task {task_id} is waiting — {question}{opts}\n  Reply with: /answer {task_id} <your choice> (auto-proceeds in {mins}m)"
+                ));
+            }
         }
     }
 
@@ -292,6 +347,28 @@ pub fn render_single_status(info: &TaskInfo) -> String {
         info.description,
         info.files_modified,
     )
+}
+
+#[cfg(feature = "sub-agents")]
+pub fn render_subtask_list(subs: &[crate::SubTaskInfo]) -> String {
+    if subs.is_empty() {
+        return "No sub-tasks.".to_string();
+    }
+    let mut out = format!("Sub-tasks ({}):\n", subs.len());
+    for s in subs {
+        let pct = (s.progress * 100.0).round() as u32;
+        let _ = write!(
+            out,
+            "  {} {} [{} {}%] — {}\n    description: {}\n",
+            s.status.emoji(),
+            s.id,
+            s.status,
+            pct,
+            s.summary,
+            s.description,
+        );
+    }
+    out.trim_end().to_string()
 }
 
 fn shorten(s: &str, max: usize) -> String {

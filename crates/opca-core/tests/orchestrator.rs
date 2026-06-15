@@ -39,6 +39,8 @@ fn make_heartbeat(
         progress,
         summary: format!("{status:?} at {progress:.0}%"),
         timestamp: 0,
+        todo: None,
+        subtasks: Vec::new(),
     }
 }
 

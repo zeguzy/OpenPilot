@@ -13,6 +13,8 @@ fn snapshot_confirmed_report() {
         confidence: 0.95,
         findings: vec![],
         summary: "All checks passed, diff is clean".to_string(),
+        justification: "Decision tree rule 4: only info/minor findings, confidence ≥ 0.5."
+            .to_string(),
     };
     assert_json_snapshot!(report);
 }
@@ -29,6 +31,7 @@ fn snapshot_false_positive_report() {
             issue: "Missing null check on user input".to_string(),
         }],
         summary: "Minor issue found in auth module".to_string(),
+        justification: "Diff does not contain the claimed auth refactor.".to_string(),
     };
     assert_json_snapshot!(report);
 }
@@ -52,6 +55,8 @@ fn snapshot_needs_fix_report() {
             },
         ],
         summary: "Critical security vulnerabilities detected".to_string(),
+        justification: "Decision tree rule 2: major finding (hardcoded secret) mandates NeedsFix."
+            .to_string(),
     };
     assert_json_snapshot!(report);
 }
@@ -68,6 +73,7 @@ fn snapshot_needs_human_review_report() {
             issue: "Ambiguous refactor, cannot verify correctness".to_string(),
         }],
         summary: "Cannot determine correctness automatically".to_string(),
+        justification: "Refactor is too ambiguous to verify automatically; escalating.".to_string(),
     };
     assert_json_snapshot!(report);
 }
@@ -80,6 +86,7 @@ fn snapshot_decision_accept() {
         confidence: 0.9,
         findings: vec![],
         summary: "Clean".to_string(),
+        justification: String::new(),
     };
     let decision = AuditDecision::accept(report);
     assert_json_snapshot!(decision);
@@ -97,6 +104,7 @@ fn snapshot_decision_override() {
             issue: "3 tests failed".to_string(),
         }],
         summary: "Tests are failing".to_string(),
+        justification: String::new(),
     };
     let decision = AuditDecision::override_to(
         report,
@@ -114,6 +122,7 @@ fn report_json_serializes_verdict_snake_case() {
         confidence: 0.5,
         findings: vec![],
         summary: "test".to_string(),
+        justification: String::new(),
     };
     let json = serde_json::to_string(&report).unwrap();
     assert!(
@@ -135,6 +144,7 @@ fn report_json_roundtrip() {
             issue: "note".to_string(),
         }],
         summary: "roundtrip test".to_string(),
+        justification: "test justification".to_string(),
     };
     let json = serde_json::to_string(&report).unwrap();
     let back: AuditReport = serde_json::from_str(&json).unwrap();

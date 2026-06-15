@@ -13,5 +13,6 @@ expression: report
       "issue": "Missing null check on user input"
     }
   ],
-  "summary": "Minor issue found in auth module"
+  "summary": "Minor issue found in auth module",
+  "justification": "Diff does not contain the claimed auth refactor."
 }

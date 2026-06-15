@@ -88,6 +88,16 @@ fn drain_highlights(rx: &mut tokio::sync::mpsc::UnboundedReceiver<Highlight>) ->
     hls
 }
 
+fn drain_highlights_for_tag(
+    rx: &mut tokio::sync::mpsc::UnboundedReceiver<Highlight>,
+    tag: &str,
+) -> Vec<Highlight> {
+    drain_highlights(rx)
+        .into_iter()
+        .filter(|h| h.tag == tag)
+        .collect()
+}
+
 // ── Task 9.4: single-turn with ScriptedProvider ───────────────────────────
 
 #[tokio::test]
@@ -353,11 +363,11 @@ async fn report_highlight_pushes_highlight_to_channel() {
     let outcome = task.run("scan for issues").await;
     assert!(matches!(outcome, TaskOutcome::Completed(_)));
 
-    let highlights = drain_highlights(&mut handle.highlight_rx);
+    let highlights = drain_highlights_for_tag(&mut handle.highlight_rx, "security risks");
     assert_eq!(
         highlights.len(),
         1,
-        "expected 1 highlight, got {}: {highlights:?}",
+        "expected 1 highlight with tag 'security risks', got {}: {highlights:?}",
         highlights.len()
     );
     assert_eq!(highlights[0].tag, "security risks");
@@ -387,7 +397,7 @@ async fn report_highlight_tag_must_match_focus() {
 
     task.run("scan").await;
 
-    let highlights = drain_highlights(&mut handle.highlight_rx);
+    let highlights = drain_highlights_for_tag(&mut handle.highlight_rx, "documentation");
     assert!(
         highlights.is_empty(),
         "highlight with invalid tag should not be pushed"
@@ -611,4 +621,316 @@ async fn exhausted_provider_returns_error() {
         }
         other => panic!("expected Error, got {other:?}"),
     }
+}
+
+// ── G3.9: Evidence Gate integration test ───────────────────────────────────
+
+/// A workspace backed by a real temp directory so evidence commands
+/// can actually execute.
+struct TempWorkspace {
+    path: PathBuf,
+}
+
+impl TempWorkspace {
+    const fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Workspace for TempWorkspace {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+    fn freeze(&mut self) -> WsResult<()> {
+        Ok(())
+    }
+    fn diff(&self) -> WsResult<ChangeSet> {
+        Ok(ChangeSet::default())
+    }
+    fn merge_into(&self, _target: &Path) -> WsResult<MergeResult> {
+        Ok(MergeResult::Clean)
+    }
+    fn cleanup(&mut self) -> WsResult<()> {
+        Ok(())
+    }
+    fn is_frozen(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn evidence_gate_failure_prevents_delivered() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Evidence command: succeeds on first run (baseline), fails on
+    // second run (verify) by using a marker file.
+    let cmd = "sh -c 'if [ -f .gate_marker ]; then echo \"error: gate tripped\" >&2; exit 1; else touch .gate_marker; fi'";
+
+    let provider = ScriptedProvider::new().then_text("done").then_done();
+
+    let tools = ToolRegistry::new();
+    let ctx = ToolContext {
+        workspace_path: dir.path().to_path_buf(),
+        fs: Arc::new(MockFileSystem::new()),
+        proc: Arc::new(MockProcess::new()),
+    };
+    let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
+
+    let (mut task, mut handle) = Task::new(
+        "task-evidence",
+        Arc::new(provider) as Arc<dyn Provider>,
+        Box::new(TempWorkspace::new(dir.path().to_path_buf())),
+        FocusContract::empty(),
+        tools,
+        ctx,
+        clock,
+    );
+    task.with_evidence_commands(vec![cmd.to_string()]);
+
+    let outcome = task.run("implement feature X").await;
+
+    assert!(
+        !matches!(outcome, TaskOutcome::Completed(_)),
+        "Task must NOT complete when evidence gate fails"
+    );
+    assert_ne!(
+        task.lifecycle_current(),
+        TaskStatus::Delivered,
+        "Task must NOT be Delivered when evidence gate fails"
+    );
+
+    // Phase should be back at Two (returned from Three).
+    assert_eq!(
+        task.current_phase(),
+        opca_core::task::Phase::Two,
+        "Task should have returned to Phase 2 after evidence failure"
+    );
+
+    // An evidence-gate highlight should have been emitted.
+    let hls = drain_highlights(&mut handle.highlight_rx);
+    let has_gate_failure = hls
+        .iter()
+        .any(|h| h.tag == "evidence-gate" && h.summary.contains("failed"));
+    assert!(
+        has_gate_failure,
+        "should have an evidence-gate failure highlight"
+    );
+}
+
+#[tokio::test]
+async fn evidence_gate_pass_allows_delivered() {
+    let dir = tempfile::tempdir().unwrap();
+
+    // Evidence command that always succeeds.
+    let provider = ScriptedProvider::new().then_text("done").then_done();
+
+    let tools = ToolRegistry::new();
+    let ctx = ToolContext {
+        workspace_path: dir.path().to_path_buf(),
+        fs: Arc::new(MockFileSystem::new()),
+        proc: Arc::new(MockProcess::new()),
+    };
+    let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
+
+    let (mut task, _handle) = Task::new(
+        "task-evidence-ok",
+        Arc::new(provider) as Arc<dyn Provider>,
+        Box::new(TempWorkspace::new(dir.path().to_path_buf())),
+        FocusContract::empty(),
+        tools,
+        ctx,
+        clock,
+    );
+    task.with_evidence_commands(vec!["true".to_string()]);
+
+    let outcome = task.run("implement feature Y").await;
+
+    assert!(
+        matches!(outcome, TaskOutcome::Completed(_)),
+        "Task should complete when evidence gate passes"
+    );
+    assert_eq!(
+        task.lifecycle_current(),
+        TaskStatus::Delivered,
+        "Task should be Delivered when evidence gate passes"
+    );
+}
+
+// ── G8.7: 3-strike → Stuck integration test ───────────────────────────────
+
+#[tokio::test]
+async fn three_strike_evidence_failure_transitions_to_stuck() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let cmd = "sh -c 'if [ -f .baseline_marker ]; then echo \"error: type mismatch\" >&2; exit 1; else touch .baseline_marker; fi'";
+
+    let provider = ScriptedProvider::new()
+        .then_text("attempt 1")
+        .then_done()
+        .then_text("attempt 2")
+        .then_done()
+        .then_text("attempt 3")
+        .then_done();
+
+    let tools = ToolRegistry::new();
+    let ctx = ToolContext {
+        workspace_path: dir.path().to_path_buf(),
+        fs: Arc::new(MockFileSystem::new()),
+        proc: Arc::new(MockProcess::new()),
+    };
+    let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
+
+    let (mut task, mut handle) = Task::new(
+        "task-strike",
+        Arc::new(provider) as Arc<dyn Provider>,
+        Box::new(TempWorkspace::new(dir.path().to_path_buf())),
+        FocusContract::empty(),
+        tools,
+        ctx,
+        clock,
+    );
+    task.with_evidence_commands(vec![cmd.to_string()]);
+
+    let outcome = task.run("implement feature Z").await;
+
+    match outcome {
+        TaskOutcome::Error(msg) => {
+            assert!(
+                msg.contains("3 times"),
+                "error should mention 3-strike: {msg}"
+            );
+            assert!(
+                msg.contains("type mismatch"),
+                "error should mention the repeated issue: {msg}"
+            );
+        }
+        other => panic!("expected Error (Stuck), got {other:?}"),
+    }
+
+    assert_eq!(
+        task.lifecycle_current(),
+        TaskStatus::Stuck,
+        "Task should be Stuck after 3 consecutive identical failures"
+    );
+
+    let hls = drain_highlights(&mut handle.highlight_rx);
+    let gate_failure_count = hls
+        .iter()
+        .filter(|h| h.tag == "evidence-gate" && h.summary.contains("failed"))
+        .count();
+    assert_eq!(
+        gate_failure_count, 3,
+        "should have exactly 3 evidence-gate failure highlights"
+    );
+}
+
+// ── G6.9: Phase transition integration tests ──────────────────────────────
+
+#[tokio::test]
+async fn phase_transitions_through_normal_lifecycle() {
+    let fs = MockFileSystem::new();
+    fs.insert_file("/workspace/foo.rs", b"data");
+
+    let provider = ScriptedProvider::new()
+        .then_tool_call("read", json!({"path": "foo.rs"}))
+        .then_done()
+        .then_text("done")
+        .then_done();
+
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(opca_core::tools::builtin::ReadTool));
+    let ctx = make_tool_ctx(fs);
+    let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
+
+    let (mut task, mut handle) = Task::new(
+        "task-phases",
+        Arc::new(provider) as Arc<dyn Provider>,
+        Box::new(StubWorkspace::new()),
+        FocusContract::empty(),
+        tools,
+        ctx,
+        clock,
+    );
+
+    assert_eq!(task.current_phase(), opca_core::task::Phase::Zero);
+
+    task.run("read foo.rs").await;
+
+    assert_eq!(task.lifecycle_current(), TaskStatus::Delivered);
+
+    let highlights = drain_highlights(&mut handle.highlight_rx);
+    let transitions: Vec<&Highlight> = highlights
+        .iter()
+        .filter(|h| h.tag == "phase-transition")
+        .collect();
+
+    assert!(
+        !transitions.is_empty(),
+        "should have phase-transition highlights"
+    );
+
+    let summaries: Vec<&str> = transitions.iter().map(|h| h.summary.as_str()).collect();
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.contains("0→1") || s.contains("0→")),
+        "should have Phase 0→1 transition: {summaries:?}"
+    );
+    assert!(
+        summaries
+            .iter()
+            .any(|s| s.contains("→3") || s.contains("Phase 2→3") || s.contains("Phase 1→3")),
+        "should have a transition to Phase 3: {summaries:?}"
+    );
+}
+
+// ── G7.7: TodoWrite integration tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn todowrite_tool_updates_heartbeat() {
+    let provider = ScriptedProvider::new()
+        .then_tool_call(
+            "todowrite",
+            json!({
+                "items": [
+                    { "content": "step 1", "status": "completed" },
+                    { "content": "step 2", "status": "in_progress" },
+                    { "content": "step 3", "status": "pending" }
+                ]
+            }),
+        )
+        .then_done()
+        .then_text("done")
+        .then_done();
+
+    let (mut task, mut handle) = make_task(provider, FocusContract::empty(), MockFileSystem::new());
+
+    task.run("do work").await;
+
+    let heartbeats = drain_heartbeats(&mut handle.heartbeat_rx);
+    let tool_hb: Vec<_> = heartbeats.iter().filter(|hb| hb.todo.is_some()).collect();
+
+    assert!(
+        !tool_hb.is_empty(),
+        "at least one heartbeat should have todo info"
+    );
+
+    let todo = tool_hb[0].todo.as_ref().unwrap();
+    assert_eq!(todo.total, 3);
+    assert_eq!(todo.completed, 1);
+    assert_eq!(todo.in_progress.as_deref(), Some("step 2"));
+}
+
+#[tokio::test]
+async fn trivial_task_heartbeat_has_no_todo() {
+    let provider = ScriptedProvider::new().then_text("ok").then_done();
+    let (mut task, mut handle) = make_task(provider, FocusContract::empty(), MockFileSystem::new());
+
+    task.run("hi").await;
+
+    let heartbeats = drain_heartbeats(&mut handle.heartbeat_rx);
+    assert!(
+        heartbeats.iter().all(|hb| hb.todo.is_none()),
+        "trivial task heartbeats should have todo: None"
+    );
 }

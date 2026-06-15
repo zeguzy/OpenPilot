@@ -117,6 +117,39 @@ max_no_progress_rounds = 2
 
 # Audit confidence below which NeedsFix escalates to NeedsHumanReview.
 audit_confidence_threshold = 0.5
+
+[task]
+# Evidence Gate: commands run in the Task workspace before the Task is
+# allowed to transition to Delivered. If any command produces NEW errors
+# (not present in the baseline captured at Task start), the Task is sent
+# back to Phase 2 (Implementation) to fix the errors.
+#
+# Set to an empty list to disable the Evidence Gate entirely (useful for
+# research-only Tasks or non-code work).
+evidence_commands = [
+    "cargo build",
+    "cargo test --no-run",
+    "cargo clippy --workspace --all-targets",
+]
+
+[orchestrator]
+# DEPRECATED — routing is now driven by the `dispatch_task` tool call,
+# not string-prefix matching. This key is silently ignored if present.
+# Remove it from your config to silence the startup deprecation warning.
+# dispatch_prefix = "OPCA_DISPATCH:"
+
+[sub_agents]
+# Sub-agent system (requires the `sub-agents` feature flag). Controls how
+# Tasks delegate work to child Tasks. Disabled entirely when the feature
+# is not compiled in.
+#
+# Maximum delegation depth. Root Tasks are depth 0; their children are
+# depth 1; grandchildren depth 2. Deeper than this is rejected.
+depth_limit = 2
+
+# Maximum number of concurrent sub-tasks per parent Task. A Task at its
+# parallel limit must wait for a sub-task to finish before spawning another.
+parallel_limit = 3
 ```
 
 ### Keys the runtime honours today
@@ -135,6 +168,10 @@ which ones take effect in the current release.
 | `memory.max_active_tokens` | read  | Caps the Orchestrator's active region.                       |
 | `hooks.default_timeout_ms` | reserved | Per-hook `timeout_ms` already works in `hooks.toml`.        |
 | `audit.risk_threshold` | reserved  | Risk classification runs, but the threshold is hard-coded.     |
+| `task.evidence_commands` | read    | Evidence Gate commands. Default: `cargo build`, `cargo test --no-run`, `cargo clippy --workspace --all-targets`. Empty list disables the gate. |
+| `orchestrator.dispatch_prefix` | deprecated | Ignored. Routing uses the `dispatch_task` tool. Startup warns if present. |
+| `sub_agents.depth_limit` | read    | Max delegation depth (default 2). Behind `sub-agents` feature. |
+| `sub_agents.parallel_limit` | read | Max concurrent sub-tasks per parent (default 3). Behind `sub-agents` feature. |
 
 Keys marked `reserved` document the intended contract so config files
 stay forward-compatible.

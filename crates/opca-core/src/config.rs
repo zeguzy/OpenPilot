@@ -15,6 +15,52 @@ pub struct Config {
     pub provider: ProviderConfig,
     #[serde(default)]
     pub continuation: ContinuationConfig,
+    #[serde(default)]
+    pub orchestrator: OrchestratorConfig,
+    #[serde(default)]
+    pub task: TaskConfig,
+    #[cfg(feature = "sub-agents")]
+    #[serde(default)]
+    pub sub_agents: SubAgentConfig,
+}
+
+/// `[orchestrator]` section.
+///
+/// `dispatch_prefix` is **deprecated**. Routing is now driven by the
+/// `dispatch_task` tool call, not string-prefix matching. If the key is
+/// present in the config file, a warning is logged on startup but no
+/// error is raised — existing config files keep working.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct OrchestratorConfig {
+    #[serde(default)]
+    pub dispatch_prefix: Option<String>,
+}
+
+/// `[task]` section.
+///
+/// Controls the Evidence Gate — the verification step that runs before
+/// a Task is allowed to transition to `Delivered`. An empty
+/// `evidence_commands` list disables the gate.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct TaskConfig {
+    #[serde(default = "default_evidence_commands")]
+    pub evidence_commands: Vec<String>,
+}
+
+fn default_evidence_commands() -> Vec<String> {
+    vec![
+        "cargo build".to_string(),
+        "cargo test --no-run".to_string(),
+        "cargo clippy --workspace --all-targets".to_string(),
+    ]
+}
+
+impl Default for TaskConfig {
+    fn default() -> Self {
+        Self {
+            evidence_commands: default_evidence_commands(),
+        }
+    }
 }
 
 /// `[model]` section.
@@ -24,6 +70,39 @@ pub struct ModelConfig {
     pub default: Option<String>,
     #[serde(default)]
     pub audit_model: Option<String>,
+}
+
+/// `[sub_agents]` section (behind the `sub-agents` feature).
+///
+/// Controls the delegation depth ceiling and the per-parent concurrency
+/// limit for sub-task spawning.
+#[cfg(feature = "sub-agents")]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct SubAgentConfig {
+    #[serde(default = "default_depth_limit")]
+    pub depth_limit: usize,
+    #[serde(default = "default_parallel_limit")]
+    pub parallel_limit: usize,
+}
+
+#[cfg(feature = "sub-agents")]
+const fn default_depth_limit() -> usize {
+    2
+}
+
+#[cfg(feature = "sub-agents")]
+const fn default_parallel_limit() -> usize {
+    3
+}
+
+#[cfg(feature = "sub-agents")]
+impl Default for SubAgentConfig {
+    fn default() -> Self {
+        Self {
+            depth_limit: default_depth_limit(),
+            parallel_limit: default_parallel_limit(),
+        }
+    }
 }
 
 /// `[provider]` section.
@@ -97,13 +176,24 @@ impl ContinuationConfig {
 impl Config {
     /// Load `.agent/config.toml` from `project_root`, or return
     /// [`Config::default`] if the file is missing or unparseable.
+    ///
+    /// If the deprecated `[orchestrator] dispatch_prefix` key is present,
+    /// a `tracing::warn!` is emitted but the load succeeds.
     #[must_use]
     pub fn load(project_root: &Path) -> Self {
         let path = project_root.join(".agent").join("config.toml");
-        match std::fs::read_to_string(&path) {
+        let cfg = match std::fs::read_to_string(&path) {
             Ok(content) => toml::from_str(&content).unwrap_or_default(),
             Err(_) => Self::default(),
+        };
+        if cfg.orchestrator.dispatch_prefix.is_some() {
+            tracing::warn!(
+                "config key [orchestrator] dispatch_prefix is deprecated and ignored; \
+                 routing now uses the dispatch_task tool call. \
+                 Remove this key from your config."
+            );
         }
+        cfg
     }
 }
 
@@ -261,5 +351,67 @@ max_iterations = 4
         let cfg = Config::load(dir.path());
         assert!(cfg.continuation.enabled);
         assert_eq!(cfg.continuation.max_iterations, 4);
+    }
+
+    #[test]
+    fn parse_dispatch_prefix_deprecated() {
+        let toml = r#"
+[orchestrator]
+dispatch_prefix = "OPCA_DISPATCH:"
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.orchestrator.dispatch_prefix.as_deref(),
+            Some("OPCA_DISPATCH:")
+        );
+    }
+
+    #[test]
+    fn default_orchestrator_config_has_no_dispatch_prefix() {
+        let cfg = Config::default();
+        assert!(cfg.orchestrator.dispatch_prefix.is_none());
+    }
+
+    #[test]
+    fn default_task_config_has_evidence_commands() {
+        let cfg = Config::default();
+        assert!(!cfg.task.evidence_commands.is_empty());
+        assert!(
+            cfg.task
+                .evidence_commands
+                .contains(&"cargo build".to_string())
+        );
+        assert!(
+            cfg.task
+                .evidence_commands
+                .contains(&"cargo test --no-run".to_string())
+        );
+        assert!(
+            cfg.task
+                .evidence_commands
+                .contains(&"cargo clippy --workspace --all-targets".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_task_section_custom_evidence_commands() {
+        let toml = r#"
+[task]
+evidence_commands = ["npm test", "npm run lint"]
+"#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.task.evidence_commands.len(), 2);
+        assert_eq!(cfg.task.evidence_commands[0], "npm test");
+        assert_eq!(cfg.task.evidence_commands[1], "npm run lint");
+    }
+
+    #[test]
+    fn parse_task_section_empty_disables_gate() {
+        let toml = r"
+[task]
+evidence_commands = []
+";
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert!(cfg.task.evidence_commands.is_empty());
     }
 }

@@ -4,6 +4,28 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Summary of the Task's todo list, surfaced in Layer 1 heartbeats.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TodoSummary {
+    pub total: usize,
+    pub completed: usize,
+    pub in_progress: Option<String>,
+}
+
+/// Aggregated snapshot of a sub-task's Layer 1 state, folded into the
+/// parent Task's heartbeat for unified observability.
+///
+/// Populated by the sub-agent aggregation logic (behind the `sub-agents`
+/// feature). Without the feature, the `Heartbeat::subtasks` vector is
+/// always empty.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubTaskHeartbeat {
+    pub id: String,
+    pub status: TaskStatus,
+    pub progress: f64,
+    pub in_progress_todo: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Heartbeat {
     pub task_id: String,
@@ -11,6 +33,12 @@ pub struct Heartbeat {
     pub progress: f64,
     pub summary: String,
     pub timestamp: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub todo: Option<TodoSummary>,
+    /// Folded sub-task heartbeats. Always empty without the `sub-agents`
+    /// feature; populated by the aggregation layer when enabled.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub subtasks: Vec<SubTaskHeartbeat>,
 }
 
 pub struct LifecycleTracker {
@@ -61,6 +89,8 @@ impl LifecycleTracker {
                 progress: progress.clamp(0.0, 1.0),
                 summary: summary.to_string(),
                 timestamp: unix_timestamp(self.clock.as_ref()),
+                todo: None,
+                subtasks: Vec::new(),
             };
             if let Some(tx) = &self.heartbeat_tx {
                 let _ = tx.send(heartbeat.clone());

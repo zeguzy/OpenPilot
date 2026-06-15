@@ -100,6 +100,8 @@ fn heartbeat_json_snapshot_on_it() {
         progress: 0.0,
         summary: "starting execution".to_string(),
         timestamp: 0,
+        todo: None,
+        subtasks: Vec::new(),
     };
     assert_json_snapshot!(hb);
 }
@@ -112,6 +114,8 @@ fn heartbeat_json_snapshot_delivered() {
         progress: 1.0,
         summary: "refactored auth module".to_string(),
         timestamp: 1_700_000_000,
+        todo: None,
+        subtasks: Vec::new(),
     };
     assert_json_snapshot!(hb);
 }
@@ -124,6 +128,8 @@ fn heartbeat_json_snapshot_stuck() {
         progress: 0.42,
         summary: "blocked on API rate limit".to_string(),
         timestamp: 1_699_999_999,
+        todo: None,
+        subtasks: Vec::new(),
     };
     assert_json_snapshot!(hb);
 }
@@ -136,6 +142,8 @@ fn heartbeat_json_snapshot_waiting() {
         progress: 0.5,
         summary: "needs clarification on auth flow".to_string(),
         timestamp: 1_000,
+        todo: None,
+        subtasks: Vec::new(),
     };
     assert_json_snapshot!(hb);
 }
@@ -148,6 +156,8 @@ fn heartbeat_roundtrip_serialize_deserialize() {
         progress: 0.33,
         summary: "thinking".to_string(),
         timestamp: 42,
+        todo: None,
+        subtasks: Vec::new(),
     };
     let json = serde_json::to_string(&hb).unwrap();
     let back: Heartbeat = serde_json::from_str(&json).unwrap();
@@ -166,7 +176,72 @@ fn status_serializes_to_kebab_case() {
         progress: 0.0,
         summary: "starting execution".to_string(),
         timestamp: 0,
+        todo: None,
+        subtasks: Vec::new(),
     };
     let json = serde_json::to_string(&hb).unwrap();
     assert!(json.contains("\"on-it\""));
+}
+
+#[test]
+fn heartbeat_with_todo_serializes_correctly() {
+    let hb = Heartbeat {
+        task_id: "task-todo".to_string(),
+        status: TaskStatus::OnIt,
+        progress: 0.5,
+        summary: "working".to_string(),
+        timestamp: 100,
+        todo: Some(opca_core::lifecycle::TodoSummary {
+            total: 5,
+            completed: 2,
+            in_progress: Some("implementing auth module".to_string()),
+        }),
+        subtasks: Vec::new(),
+    };
+    let json = serde_json::to_string(&hb).unwrap();
+    assert!(json.contains("\"todo\""));
+    assert!(json.contains("\"total\":5"));
+    assert!(json.contains("\"completed\":2"));
+    assert!(json.contains("implementing auth module"));
+    let back: Heartbeat = serde_json::from_str(&json).unwrap();
+    assert_eq!(hb, back);
+}
+
+#[test]
+fn heartbeat_with_none_todo_omits_field() {
+    let hb = Heartbeat {
+        task_id: "no-todo".to_string(),
+        status: TaskStatus::OnIt,
+        progress: 0.0,
+        summary: "trivial".to_string(),
+        timestamp: 0,
+        todo: None,
+        subtasks: Vec::new(),
+    };
+    let json = serde_json::to_string(&hb).unwrap();
+    assert!(
+        !json.contains("\"todo\""),
+        "todo field should be omitted when None"
+    );
+}
+
+#[test]
+fn heartbeat_with_todo_no_in_progress() {
+    let hb = Heartbeat {
+        task_id: "no-active".to_string(),
+        status: TaskStatus::Pondering,
+        progress: 0.3,
+        summary: "thinking".to_string(),
+        timestamp: 0,
+        todo: Some(opca_core::lifecycle::TodoSummary {
+            total: 3,
+            completed: 3,
+            in_progress: None,
+        }),
+        subtasks: Vec::new(),
+    };
+    let json = serde_json::to_string(&hb).unwrap();
+    assert!(json.contains("\"total\":3"));
+    assert!(json.contains("\"completed\":3"));
+    assert!(json.contains("\"in_progress\":null"));
 }

@@ -14,7 +14,8 @@ expression: decision
         "issue": "3 tests failed"
       }
     ],
-    "summary": "Tests are failing"
+    "summary": "Tests are failing",
+    "justification": ""
   },
   "override_verdict": "confirmed",
   "override_reason": "tests were pre-existing failures, not caused by this task"

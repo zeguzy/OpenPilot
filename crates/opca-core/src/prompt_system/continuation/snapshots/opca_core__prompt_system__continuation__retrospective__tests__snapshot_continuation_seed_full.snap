@@ -1,0 +1,24 @@
+---
+source: crates/opca-core/src/prompt_system/continuation/retrospective.rs
+expression: seed
+---
+=== Continuation Iteration 3 ===
+
+## Audit Findings (from previous iteration)
+- [warning] src/auth.rs: test_login still fails
+- [warning] src/session.rs: session timeout not handled
+
+## Budget
+Iteration: 2 of 10 (8 remaining)
+Cost: $0.13 of $5.00 ($4.87 remaining)
+Time: 0s of 30m
+
+## Retrospective (previous iterations)
+Iteration 2 (NeedsFix): restructured login flow — cost $0.10, duration 20s
+Iteration 1 (NeedsFix): attempted fix in auth.rs — cost $0.05, duration 10s
+Do not repeat these failed approaches.
+
+## No-Progress Warning
+⚠ The last 1 iteration(s) produced no meaningful progress. Try a fundamentally different approach.
+
+Continue the work, addressing the findings above.

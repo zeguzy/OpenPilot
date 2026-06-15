@@ -8,6 +8,7 @@ expression: decision
     "verdict": "confirmed",
     "confidence": 0.9,
     "findings": [],
-    "summary": "Clean"
+    "summary": "Clean",
+    "justification": ""
   }
 }

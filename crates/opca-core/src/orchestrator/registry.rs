@@ -12,6 +12,17 @@ use crate::task::{SteeringMessage, TaskOutcome};
 
 pub type ContextSnapshot = Arc<Mutex<Vec<Message>>>;
 
+/// Lightweight view of a sub-task, returned by
+/// [`Orchestrator::subtasks_of`](super::orchestrator::Orchestrator::subtasks_of).
+#[derive(Debug, Clone)]
+pub struct SubTaskRecord {
+    pub id: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub progress: f64,
+    pub summary: String,
+}
+
 pub struct TaskEntry {
     pub id: String,
     pub description: String,
@@ -214,6 +225,8 @@ mod tests {
             progress: 0.5,
             summary: "working".to_string(),
             timestamp: 1,
+            todo: None,
+            subtasks: Vec::new(),
         };
         reg.record_heartbeat("t1", hb);
         let entry = reg.get("t1").unwrap();

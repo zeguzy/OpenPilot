@@ -90,5 +90,9 @@ harness = false
 name = "memory_recall"
 harness = false
 
+[features]
+default = []
+sub-agents = []
+
 [lints]
 workspace = true

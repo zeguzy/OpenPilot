@@ -9,7 +9,7 @@ use opca_core::continuation::{
 use opca_core::di::{Clock, FileSystem, Process, StdClock, StdFileSystem, StdProcess};
 use opca_core::lifecycle::TaskStatus;
 use opca_core::orchestrator::Orchestrator;
-use opca_core::provider::Provider;
+use opca_core::provider::{Provider, ToolDef, ToolEffects};
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use tracing::warn;
 
@@ -29,6 +29,8 @@ pub struct RealOrchestrator {
 struct TrackedTasks {
     tasks: Vec<TrackedTask>,
     last_status: HashMap<String, TaskStatus>,
+    clarification_sent: std::collections::HashSet<String>,
+    waiting_since: HashMap<String, std::time::Instant>,
 }
 
 struct TrackedTask {
@@ -36,6 +38,41 @@ struct TrackedTask {
     description: String,
     accepted: bool,
     rejected: bool,
+}
+
+const CLARIFICATION_TIMEOUT_SECS: u64 = 300;
+const CLARIFICATION_PREFIX: &str = "Waiting for clarification:";
+
+#[must_use]
+fn dispatch_task_tool_def() -> ToolDef {
+    ToolDef {
+        name: "dispatch_task".to_string(),
+        description: "Dispatch a background Task to work on a long-running job. Use this instead \
+            of writing plain text when the user's request involves implementation, multi-step \
+            work, or background processing."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": "The full prompt to send to the Task. Should include context, goal, and any constraints."
+                },
+                "focus_dimensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional focus dimensions for the Task (e.g., [\"compilation\", \"tests\"]). Defaults to []"
+                },
+                "predecessors": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional Task IDs that must complete before this Task starts."
+                }
+            },
+            "required": ["prompt"]
+        }),
+        effects: ToolEffects::Process,
+    }
 }
 
 impl RealOrchestrator {
@@ -139,6 +176,7 @@ async fn poll_loop(
             subs.retain(|tx| tx.send(change.clone()).is_ok());
         }
         drop(subs);
+        check_clarification_timeouts(&inner, &tracked);
         check_continuations(&inner, &tracked);
     }
 }
@@ -153,8 +191,27 @@ fn collect_changes(tracked: &mut TrackedTasks, orch: &Orchestrator) -> Vec<Notif
             .get(&task.id)
             .copied()
             .unwrap_or(TaskStatus::Sleeping);
+
+        if current == TaskStatus::Waiting && !tracked.clarification_sent.contains(&task.id) {
+            tracked.clarification_sent.insert(task.id.clone());
+            tracked
+                .waiting_since
+                .insert(task.id.clone(), std::time::Instant::now());
+            let summary = hb.map_or("", |h| h.summary.as_str());
+            let (question, options) = parse_clarification_heartbeat(summary);
+            out.push(Notification::Clarification {
+                task_id: task.id.clone(),
+                question,
+                options,
+                timeout_secs: CLARIFICATION_TIMEOUT_SECS,
+            });
+            continue;
+        }
+
         if current != previous {
             tracked.last_status.insert(task.id.clone(), current);
+            tracked.clarification_sent.remove(&task.id);
+            tracked.waiting_since.remove(&task.id);
             if current == TaskStatus::Delivered {
                 let summary = hb.map_or("", |h| h.summary.as_str());
                 out.push(Notification::Completed {
@@ -174,6 +231,14 @@ fn collect_changes(tracked: &mut TrackedTasks, orch: &Orchestrator) -> Vec<Notif
     out
 }
 
+fn parse_clarification_heartbeat(summary: &str) -> (String, Vec<String>) {
+    let question_part = summary
+        .strip_prefix(CLARIFICATION_PREFIX)
+        .unwrap_or(summary);
+    let question = question_part.trim().to_string();
+    (question, Vec::new())
+}
+
 fn count_files_from_summary(summary: &str) -> usize {
     summary
         .split_whitespace()
@@ -190,6 +255,45 @@ fn block_on_dispatch(
     let handle = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
     let fut = orch.dispatch_task(description, Vec::new(), Vec::new(), None);
     tokio::task::block_in_place(|| handle.block_on(fut)).map_err(|e| e.to_string())
+}
+
+fn check_clarification_timeouts(
+    inner: &Arc<Mutex<Orchestrator>>,
+    tracked: &Arc<Mutex<TrackedTasks>>,
+) {
+    let timed_out: Vec<String> = {
+        let orch = inner.lock().expect("poisoned");
+        let t = tracked.lock().expect("poisoned");
+        let now = std::time::Instant::now();
+        t.waiting_since
+            .iter()
+            .filter_map(|(id, since)| {
+                let status = orch
+                    .latest_heartbeat(id)
+                    .map_or(TaskStatus::Sleeping, |h| h.status);
+                if status == TaskStatus::Waiting
+                    && now.duration_since(*since).as_secs() >= CLARIFICATION_TIMEOUT_SECS
+                {
+                    Some(id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
+
+    for task_id in timed_out {
+        let orch = inner.lock().expect("poisoned");
+        let msg = opca_core::provider::Message::user(
+            "Clarification timed out. Proceeding with best-guess interpretation.".to_string(),
+        );
+        if let Err(e) = orch.inject_message(&task_id, msg) {
+            warn!("clarification timeout inject failed for {task_id}: {e}");
+        }
+        let mut t = tracked.lock().expect("poisoned");
+        t.clarification_sent.remove(&task_id);
+        t.waiting_since.remove(&task_id);
+    }
 }
 
 fn check_continuations(inner: &Arc<Mutex<Orchestrator>>, tracked: &Arc<Mutex<TrackedTasks>>) {
@@ -253,6 +357,11 @@ fn build_task_info(orch: &Orchestrator, tracked: &TrackedTasks, task_id: &str) -
         summary,
         files_modified: 0,
     })
+}
+
+struct PendingToolCall {
+    name: String,
+    args: String,
 }
 
 impl OrchestratorApi for RealOrchestrator {
@@ -376,6 +485,27 @@ impl OrchestratorApi for RealOrchestrator {
             .count()
     }
 
+    fn answer_task(&self, task_id: &str, choice: &str) -> Result<(), String> {
+        let orch = self.inner.lock().expect("poisoned");
+        if !orch.is_dispatched(task_id) {
+            return Err(format!("task '{task_id}' not found"));
+        }
+        let status = orch
+            .latest_heartbeat(task_id)
+            .map_or(TaskStatus::Sleeping, |h| h.status);
+        if status != TaskStatus::Waiting {
+            return Err(format!(
+                "task '{task_id}' is {status}, must be Waiting to answer"
+            ));
+        }
+        let msg = opca_core::provider::Message::user(format!("User answered: {choice}"));
+        if let Err(e) = orch.inject_message(task_id, msg) {
+            warn!("inject answer failed: {e}");
+            return Err(e.to_string());
+        }
+        Ok(())
+    }
+
     fn subscribe(&self) -> UnboundedReceiver<Notification> {
         let (tx, rx) = mpsc::unbounded_channel();
         self.subscribers.lock().expect("poisoned").push(tx);
@@ -393,41 +523,53 @@ impl OrchestratorApi for RealOrchestrator {
         let provider = self.provider.clone();
         let msg = Message::user(message.to_string());
         let prompt = opca_core::provider::orchestrator_prompt().to_string();
+        let tools = vec![dispatch_task_tool_def()];
         tokio::spawn(async move {
-            let result = provider.stream(&[msg], &[], Some(&prompt)).await;
+            let result = provider.stream(&[msg], &tools, Some(&prompt)).await;
             match result {
                 Ok(stream) => {
                     let mut stream = Box::pin(stream);
-                    let mut full_text = String::new();
-                    let mut line_buffer = String::new();
-                    let mut first_line_checked = false;
+                    let mut pending_tool_calls: HashMap<String, PendingToolCall> = HashMap::new();
                     while let Some(event) = stream.next().await {
                         match event {
                             Ok(ProviderEvent::TextDelta(delta)) => {
-                                full_text.push_str(&delta);
-                                if first_line_checked {
-                                    let _ = tx.send(crate::tui::app::StreamEvent::Delta(delta));
-                                } else {
-                                    line_buffer.push_str(&delta);
-                                    if line_buffer.contains('\n') {
-                                        first_line_checked = true;
-                                        if !line_buffer.trim_start().starts_with("OPCA_DISPATCH:") {
-                                            let _ = tx.send(crate::tui::app::StreamEvent::Delta(
-                                                std::mem::take(&mut line_buffer),
-                                            ));
+                                let _ = tx.send(crate::tui::app::StreamEvent::Delta(delta));
+                            }
+                            Ok(ProviderEvent::ToolCallStart { id, name }) => {
+                                pending_tool_calls.insert(
+                                    id,
+                                    PendingToolCall {
+                                        name,
+                                        args: String::new(),
+                                    },
+                                );
+                            }
+                            Ok(ProviderEvent::ToolCallArgs { id, args }) => {
+                                if let Some(tc) = pending_tool_calls.get_mut(&id) {
+                                    tc.args.push_str(&args);
+                                }
+                            }
+                            Ok(ProviderEvent::ToolCallEnd { id }) => {
+                                if let Some(tc) = pending_tool_calls.remove(&id) {
+                                    if tc.name == "dispatch_task" {
+                                        match parse_dispatch_args(&tc.args) {
+                                            Ok(prompt) => {
+                                                let _ = tx.send(
+                                                    crate::tui::app::StreamEvent::Dispatch(prompt),
+                                                );
+                                            }
+                                            Err(e) => {
+                                                let _ =
+                                                    tx.send(crate::tui::app::StreamEvent::Error(
+                                                        format!("dispatch_task parse error: {e}"),
+                                                    ));
+                                            }
                                         }
                                     }
                                 }
                             }
                             Ok(ProviderEvent::Done { .. }) => {
-                                if !first_line_checked
-                                    && !line_buffer.is_empty()
-                                    && !line_buffer.trim_start().starts_with("OPCA_DISPATCH:")
-                                {
-                                    let _ = tx.send(crate::tui::app::StreamEvent::Delta(
-                                        std::mem::take(&mut line_buffer),
-                                    ));
-                                }
+                                let _ = tx.send(crate::tui::app::StreamEvent::Done);
                                 break;
                             }
                             Ok(_) => {}
@@ -436,23 +578,6 @@ impl OrchestratorApi for RealOrchestrator {
                                 return;
                             }
                         }
-                    }
-                    if full_text.trim_start().starts_with("OPCA_DISPATCH:") {
-                        let description = full_text
-                            .trim_start()
-                            .trim_start_matches("OPCA_DISPATCH:")
-                            .lines()
-                            .next()
-                            .unwrap_or("")
-                            .trim()
-                            .to_string();
-                        if description.is_empty() {
-                            let _ = tx.send(crate::tui::app::StreamEvent::Done);
-                        } else {
-                            let _ = tx.send(crate::tui::app::StreamEvent::Dispatch(description));
-                        }
-                    } else {
-                        let _ = tx.send(crate::tui::app::StreamEvent::Done);
                     }
                 }
                 Err(e) => {
@@ -550,6 +675,44 @@ impl OrchestratorApi for RealOrchestrator {
         }
         out.trim_end().to_string()
     }
+
+    #[cfg(feature = "sub-agents")]
+    fn list_subtasks(&self, parent_task_id: Option<&str>) -> Vec<crate::SubTaskInfo> {
+        let orch = self.inner.lock().expect("poisoned");
+        if let Some(pid) = parent_task_id {
+            orch.subtasks_of(pid)
+                .into_iter()
+                .map(|r| crate::SubTaskInfo {
+                    id: r.id,
+                    description: r.description,
+                    status: r.status,
+                    progress: r.progress,
+                    summary: r.summary,
+                })
+                .collect()
+        } else {
+            orch.list_all_subtasks()
+                .into_iter()
+                .map(|r| crate::SubTaskInfo {
+                    id: r.id,
+                    description: r.description,
+                    status: r.status,
+                    progress: r.progress,
+                    summary: r.summary,
+                })
+                .collect()
+        }
+    }
+}
+
+fn parse_dispatch_args(args_json: &str) -> Result<String, String> {
+    let parsed: serde_json::Value =
+        serde_json::from_str(args_json).map_err(|e| format!("invalid JSON: {e}"))?;
+    parsed
+        .get("prompt")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "missing required 'prompt' field".to_string())
 }
 
 fn find_chain_by_str<'a>(
@@ -613,4 +776,55 @@ fn find_task_ref(lower: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_dispatch_args_extracts_prompt() {
+        let args = r#"{"prompt": "refactor the auth module"}"#;
+        assert_eq!(
+            parse_dispatch_args(args).unwrap(),
+            "refactor the auth module"
+        );
+    }
+
+    #[test]
+    fn parse_dispatch_args_with_focus_and_predecessors() {
+        let args = r#"{"prompt": "implement JWT", "focus_dimensions": ["tests"], "predecessors": ["task-0"]}"#;
+        assert_eq!(parse_dispatch_args(args).unwrap(), "implement JWT");
+    }
+
+    #[test]
+    fn parse_dispatch_args_missing_prompt_errors() {
+        let args = r#"{"focus_dimensions": ["tests"]}"#;
+        assert!(parse_dispatch_args(args).is_err());
+    }
+
+    #[test]
+    fn parse_dispatch_args_invalid_json_errors() {
+        let args = "not json";
+        assert!(parse_dispatch_args(args).is_err());
+    }
+
+    #[test]
+    fn dispatch_task_tool_def_has_correct_name() {
+        let def = dispatch_task_tool_def();
+        assert_eq!(def.name, "dispatch_task");
+        assert_eq!(def.effects, ToolEffects::Process);
+    }
+
+    #[test]
+    fn dispatch_task_tool_def_requires_prompt() {
+        let def = dispatch_task_tool_def();
+        let required = def
+            .parameters
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("required field exists");
+        let prompt_required = required.iter().any(|v| v.as_str() == Some("prompt"));
+        assert!(prompt_required);
+    }
 }

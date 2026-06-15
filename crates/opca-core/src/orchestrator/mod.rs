@@ -16,12 +16,14 @@
 //! ```
 
 mod conflict;
+pub mod dispatch_gate;
 #[allow(clippy::module_inception)]
 mod orchestrator;
 mod registry;
 mod routing;
 
 pub use conflict::predict_conflict;
+pub use dispatch_gate::{DispatchRejection, can_dispatch};
 pub use orchestrator::Orchestrator;
-pub use registry::{ContextSnapshot, TaskEntry, TaskRegistry};
+pub use registry::{ContextSnapshot, SubTaskRecord, TaskEntry, TaskRegistry};
 pub use routing::{RouteDecision, route};

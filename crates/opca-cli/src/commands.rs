@@ -10,6 +10,12 @@ pub enum SlashCommand {
         task_id: String,
         feedback: Option<String>,
     },
+    /// `/answer <task-id> <choice>` — answers a clarification request
+    /// from a `Waiting` Task.
+    Answer {
+        task_id: String,
+        choice: String,
+    },
     Tasks,
     Status {
         task_id: Option<String>,
@@ -25,6 +31,12 @@ pub enum SlashCommand {
     /// `/stop-continuation <chain-id>` or `/stop-continuation all`.
     StopContinuation {
         target: StopTarget,
+    },
+    /// `/subtasks [parent-task-id]` — lists sub-tasks of a parent task.
+    /// Only available when the `sub-agents` feature is enabled.
+    #[cfg(feature = "sub-agents")]
+    Subtasks {
+        parent_task_id: Option<String>,
     },
 }
 
@@ -82,6 +94,10 @@ impl SlashCommand {
                 task_id: require_task_id("reject", rest)?,
                 feedback: parse_feedback(rest),
             },
+            "answer" => Self::Answer {
+                task_id: require_task_id("answer", rest)?,
+                choice: parse_rest_after_task_id(rest)?,
+            },
             "tasks" | "running" | "jobs" => Self::Tasks,
             "status" => Self::Status {
                 task_id: if rest.is_empty() {
@@ -97,6 +113,14 @@ impl SlashCommand {
             },
             "stop-continuation" | "stop-continue" => Self::StopContinuation {
                 target: parse_stop_continuation(rest)?,
+            },
+            #[cfg(feature = "sub-agents")]
+            "subtasks" | "sub-tasks" => Self::Subtasks {
+                parent_task_id: if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.to_string())
+                },
             },
             other => return Err(SlashError::Unknown(other.to_string())),
         };
@@ -122,6 +146,20 @@ fn parse_feedback(rest: &str) -> Option<String> {
         None
     } else {
         Some(cleaned)
+    }
+}
+
+fn parse_rest_after_task_id(rest: &str) -> Result<String, SlashError> {
+    let mut tokens = rest.split_whitespace();
+    tokens.next().ok_or(SlashError::MissingTaskId("answer"))?;
+    let remainder = tokens.collect::<Vec<_>>().join(" ");
+    let cleaned = remainder
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_string();
+    if cleaned.is_empty() {
+        Err(SlashError::MissingPrompt("answer"))
+    } else {
+        Ok(cleaned)
     }
 }
 
@@ -200,6 +238,7 @@ pub const HELP_TEXT: &str = "\
 Slash commands:
   /accept <task-id>            Accept (merge) a delivered task
   /reject <task-id> [\"msg\"]    Reject a task; with feedback, returns it to OnIt
+  /answer <task-id> <choice>   Answer a clarification request from a Waiting task
   /tasks                       List all active tasks
   /status [task-id]            Show task status (omit id for overview)
   /continue <prompt>           Start a continuation chain (auto-iterate until Audit confirms)
@@ -207,6 +246,7 @@ Slash commands:
   /continue [-i N] [-b USD] <prompt>  Start with budget overrides
   /stop-continuation <chain-id>  Terminate one continuation chain
   /stop-continuation all         Terminate every active continuation chain
+  /subtasks [parent-id]        List sub-tasks of a parent task (feature: sub-agents)
   /help, /?                    Show this help
   /quit, /exit                 Exit the REPL
 

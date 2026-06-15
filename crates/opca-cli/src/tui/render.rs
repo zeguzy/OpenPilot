@@ -30,11 +30,24 @@ pub fn render(frame: &mut Frame, app: &App, input: &InputArea) {
 }
 
 fn render_chat(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
+    let all_items: Vec<ListItem> = app
         .chat_items
         .iter()
-        .flat_map(|item| render_chat_item(item))
+        .flat_map(render_chat_item)
         .collect();
+
+    let total = all_items.len();
+    let visible = area.height as usize;
+    let max_offset = total.saturating_sub(visible);
+    let offset = app.scroll_offset.min(max_offset);
+    let start = max_offset.saturating_sub(offset);
+
+    let items: Vec<ListItem> = if total <= visible {
+        all_items
+    } else {
+        let end = (start + visible).min(total);
+        all_items[start..end].to_vec()
+    };
 
     let list = List::new(items);
     frame.render_widget(list, area);

@@ -7,7 +7,6 @@
 //! iteration.
 
 use std::collections::HashMap;
-use std::fmt::Write;
 
 use crate::audit::{AuditVerdict, Finding};
 
@@ -16,9 +15,6 @@ use super::chain::{ChainId, ContinuationChain, IterationRecord};
 use super::no_progress::NoProgressDetector;
 use super::policy::{ContinuationPolicy, PolicyDecision};
 use super::termination::ChainTerminationReason;
-
-/// Maximum length of a single finding field in the prompt seed.
-const MAX_FINDING_FIELD_LEN: usize = 500;
 
 /// Request to dispatch a new continuation iteration.
 ///
@@ -211,47 +207,24 @@ impl ContinuationCoordinator {
 
     /// Constructs a structured continuation prompt from the chain context.
     ///
-    /// Findings are sanitized: each field is truncated to
-    /// [`MAX_FINDING_FIELD_LEN`] characters and control characters are
-    /// stripped to prevent prompt injection.
+    /// Delegates the prompt assembly to
+    /// [`crate::prompt_system::continuation::retrospective::continuation_seed`],
+    /// which owns the template text and sanitization policy. The seed now
+    /// includes budget visibility, a retrospective of prior iterations,
+    /// and a no-progress warning so the next iteration Task has full
+    /// context.
     fn prompt_seed_for(&self, chain_id: &ChainId, findings: &[Finding]) -> String {
         let Some(chain) = self.chains.get(chain_id) else {
             return String::new();
         };
-
         let next_iteration = chain.budget().current_iteration() + 1;
-        let mut seed = format!("=== Continuation Iteration {next_iteration} ===\n\n");
-
-        if !findings.is_empty() {
-            seed.push_str("Prior audit findings to address:\n");
-            for finding in findings.iter().take(10) {
-                let severity = sanitize_field(&format!("{:?}", finding.severity));
-                let location = sanitize_field(&finding.location);
-                let issue = sanitize_field(&finding.issue);
-                let _ = writeln!(seed, "- [{severity}] {location}: {issue}");
-            }
-            seed.push('\n');
-        }
-
-        let completed = chain.iterations().len();
-        let _ = writeln!(seed, "Chain context: {completed} iteration(s) completed.");
-        seed.push_str("Continue the work, addressing the findings above.\n");
-
-        seed
+        crate::prompt_system::continuation::retrospective::continuation_seed(
+            next_iteration,
+            findings,
+            chain.budget(),
+            chain.iterations(),
+        )
     }
-}
-
-/// Truncates a string to `max_len` characters and strips control characters.
-///
-/// This sanitization prevents prompt injection from untrusted audit finding
-/// text (design.md §R6).
-fn sanitize_field(s: &str) -> String {
-    let truncated = if s.len() > MAX_FINDING_FIELD_LEN {
-        &s[..MAX_FINDING_FIELD_LEN]
-    } else {
-        s
-    };
-    truncated.chars().filter(|c| !c.is_control()).collect()
 }
 
 impl std::fmt::Debug for ContinuationCoordinator {

@@ -1,7 +1,7 @@
 pub mod heartbeat;
 pub mod status;
 
-pub use heartbeat::{Heartbeat, LifecycleTracker};
+pub use heartbeat::{Heartbeat, LifecycleTracker, SubTaskHeartbeat, TodoSummary};
 pub use status::{ALL_STATUSES, TaskStatus, TransitionError, is_valid_transition, transition};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

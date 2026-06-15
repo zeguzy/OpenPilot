@@ -37,6 +37,8 @@ pub struct AuditReport {
     pub confidence: f64,
     pub findings: Vec<Finding>,
     pub summary: String,
+    #[serde(default)]
+    pub justification: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -147,6 +149,7 @@ mod tests {
                 issue: "missing null check".to_string(),
             }],
             summary: "minor issue found".to_string(),
+            justification: "Warning-level finding at src/auth.rs:42 warrants review.".to_string(),
         };
         let json = serde_json::to_string(&report).unwrap();
         let back: AuditReport = serde_json::from_str(&json).unwrap();
@@ -162,6 +165,25 @@ mod tests {
     }
 
     #[test]
+    fn audit_report_serialization_with_justification() {
+        let report = AuditReport {
+            task_id: "task_001".to_string(),
+            verdict: AuditVerdict::NeedsFix,
+            confidence: 0.85,
+            findings: vec![Finding {
+                severity: Severity::Blocking,
+                location: "src/lib.rs:42".to_string(),
+                issue: "unwrap() in library code".to_string(),
+            }],
+            summary: "Found 1 major issue".to_string(),
+            justification:
+                "Applied decision tree rule 2: major finding in src/lib.rs:42 mandates NeedsFix."
+                    .to_string(),
+        };
+        insta::assert_json_snapshot!(report);
+    }
+
+    #[test]
     fn decision_accept_has_no_override() {
         let report = AuditReport {
             task_id: "t".to_string(),
@@ -169,6 +191,7 @@ mod tests {
             confidence: 1.0,
             findings: vec![],
             summary: "ok".to_string(),
+            justification: String::new(),
         };
         let decision = AuditDecision::accept(report.clone());
         assert!(!decision.was_overridden());
@@ -184,6 +207,7 @@ mod tests {
             confidence: 0.8,
             findings: vec![],
             summary: "tests failed".to_string(),
+            justification: String::new(),
         };
         let decision = AuditDecision::override_to(
             report,

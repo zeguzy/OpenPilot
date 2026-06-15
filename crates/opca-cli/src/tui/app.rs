@@ -23,6 +23,7 @@ pub enum ChatItem {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Delta(String),
     Done,
@@ -44,6 +45,9 @@ pub struct App {
     pub orchestrator: Arc<dyn OrchestratorApi>,
     pub stream_rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
     pub stream_tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    /// Chat scroll offset in rendered lines. 0 = stick to bottom (latest).
+    /// Positive = scrolled up N lines from the bottom.
+    pub scroll_offset: usize,
 }
 
 impl App {
@@ -66,6 +70,7 @@ impl App {
             orchestrator,
             stream_rx,
             stream_tx,
+            scroll_offset: 0,
         }
     }
 
@@ -77,6 +82,22 @@ impl App {
     pub const fn stop_working(&mut self) {
         self.is_working = false;
         self.working_start = None;
+    }
+
+    pub const fn scroll_up(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_add(lines);
+    }
+
+    pub const fn scroll_down(&mut self, lines: usize) {
+        self.scroll_offset = self.scroll_offset.saturating_sub(lines);
+    }
+
+    pub const fn scroll_to_bottom(&mut self) {
+        self.scroll_offset = 0;
+    }
+
+    pub const fn is_at_bottom(&self) -> bool {
+        self.scroll_offset == 0
     }
 
     #[must_use]
@@ -195,6 +216,14 @@ impl App {
                 summary,
             } => {
                 self.update_task_panel(task_id, &format!("{status} — {summary}"));
+            }
+            Notification::Clarification {
+                task_id, question, ..
+            } => {
+                self.update_task_panel(task_id, "waiting for clarification");
+                self.chat_items.push(ChatItem::SystemMessage(format!(
+                    "\u{1fae5} Task {task_id} asks: {question}"
+                )));
             }
         }
     }

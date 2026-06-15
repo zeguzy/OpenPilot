@@ -1,19 +1,8 @@
-use super::FocusContract;
+//! Backward-compatibility re-export.
+//!
+//! The canonical home for the focus prompt builder is now
+//! [`crate::prompt_system::task::focus`]. This file remains so the
+//! `pub use prompt::build_focus_prompt` in `focus/mod.rs` keeps
+//! resolving for callers that import from `opca_core::focus`.
 
-#[must_use]
-pub fn build_focus_prompt(focus: &FocusContract) -> String {
-    if focus.dimensions().is_empty() {
-        return String::new();
-    }
-    let dims = focus
-        .dimensions()
-        .iter()
-        .map(|d| format!("  - [{d}]"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!(
-        "You have a reporting tool `report_highlight`. \
-         You must monitor and report findings on these dimensions:\n{dims}\n\n\
-         When calling report_highlight, the `tag` field MUST match one of the dimensions above."
-    )
-}
+pub use crate::prompt_system::task::focus::build_focus_prompt;

@@ -14,6 +14,7 @@ fn fail_report(task_id: &str) -> AuditReport {
             issue: "test_auth_token_refresh failed".to_string(),
         }],
         summary: "test_auth_token_refresh is failing".to_string(),
+        justification: String::new(),
     }
 }
 
@@ -83,6 +84,7 @@ fn override_to_needs_fix_from_confirmed() {
         confidence: 0.9,
         findings: vec![],
         summary: "audit said confirmed".to_string(),
+        justification: String::new(),
     };
     let decision = AuditDecision::override_to(
         report,

@@ -473,3 +473,133 @@ fn e2e_user_cancellation_stops_chain() {
         "cancelled chain must not be listed as active"
     );
 }
+
+// ── Continuation seed enrichment tests (task 10.6) ──────────────
+//
+// These tests exercise the enriched seed through the public coordinator
+// API, verifying that budget visibility, retrospective entries, and the
+// no-progress warning appear in the dispatch request's prompt_seed.
+
+#[test]
+fn seed_contains_budget_numbers() {
+    let mut coord = make_coordinator();
+    coord.start_chain("task-a".to_string(), generous_budget());
+
+    let result = coord.evaluate("task-a", Some(&AuditVerdict::NeedsFix), 0.9, &[]);
+    let request = result.expect("NeedsFix should dispatch");
+
+    let seed = &request.prompt_seed;
+    assert!(
+        seed.contains("## Budget"),
+        "seed must contain Budget section: {seed}"
+    );
+    assert!(
+        seed.contains("of 10 ("),
+        "seed must show max iterations: {seed}"
+    );
+    assert!(
+        seed.contains("$0.00 of $100.00"),
+        "seed must show cost budget: {seed}"
+    );
+}
+
+#[test]
+fn seed_contains_retrospective_after_multiple_iterations() {
+    let mut coord = make_coordinator();
+    let chain_id = coord.start_chain("task-iter1".to_string(), generous_budget());
+
+    let finding1 = make_finding("src/auth.rs", "test_login fails");
+    let req1 = coord
+        .evaluate(
+            "task-iter1",
+            Some(&AuditVerdict::NeedsFix),
+            0.9,
+            &[finding1],
+        )
+        .expect("iteration 1 should continue");
+    assert_eq!(req1.iteration, 1);
+
+    coord.set_current_task(&chain_id, "task-iter2".to_string());
+
+    let finding2 = make_finding("src/auth.rs", "test_login still fails");
+    let req2 = coord
+        .evaluate(
+            "task-iter2",
+            Some(&AuditVerdict::NeedsFix),
+            0.9,
+            &[finding2],
+        )
+        .expect("iteration 2 should continue");
+
+    let seed = &req2.prompt_seed;
+    assert!(
+        seed.contains("## Retrospective"),
+        "seed for iteration 2 must contain Retrospective section: {seed}"
+    );
+    assert!(
+        seed.contains("Iteration 1 (NeedsFix)"),
+        "seed must show iteration 1 in retrospective: {seed}"
+    );
+    assert!(
+        seed.contains("Do not repeat these failed approaches"),
+        "seed must contain do-not-repeat instruction: {seed}"
+    );
+}
+
+#[test]
+fn seed_shows_no_progress_warning() {
+    let mut coord = make_coordinator();
+    let chain_id = coord.start_chain(
+        "task-iter1".to_string(),
+        ContinuationBudget::new(100, 100.0, Duration::from_secs(3600), 10),
+    );
+
+    let make_repeated_finding = || make_finding("src/auth.rs", "same issue persists");
+
+    let req1 = coord
+        .evaluate(
+            "task-iter1",
+            Some(&AuditVerdict::NeedsFix),
+            0.9,
+            &[make_repeated_finding()],
+        )
+        .expect("iteration 1 continues");
+    assert!(
+        !req1.prompt_seed.contains("## No-Progress Warning"),
+        "first iteration seed must not have no-progress warning"
+    );
+
+    coord.set_current_task(&chain_id, "task-iter2".to_string());
+    let req2 = coord
+        .evaluate(
+            "task-iter2",
+            Some(&AuditVerdict::NeedsFix),
+            0.9,
+            &[make_repeated_finding()],
+        )
+        .expect("iteration 2 continues");
+    assert!(
+        !req2.prompt_seed.contains("## No-Progress Warning"),
+        "second iteration seed must not have no-progress warning yet"
+    );
+
+    coord.set_current_task(&chain_id, "task-iter3".to_string());
+    let req3 = coord
+        .evaluate(
+            "task-iter3",
+            Some(&AuditVerdict::NeedsFix),
+            0.9,
+            &[make_repeated_finding()],
+        )
+        .expect("iteration 3 continues");
+
+    let seed = &req3.prompt_seed;
+    assert!(
+        seed.contains("## No-Progress Warning"),
+        "third iteration seed must have no-progress warning after repeated findings: {seed}"
+    );
+    assert!(
+        seed.contains("last 1 iteration"),
+        "seed must show no-progress count: {seed}"
+    );
+}

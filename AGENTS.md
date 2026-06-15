@@ -140,6 +140,23 @@ These are non-negotiable. Automated checks enforce most of them.
   `Box<dyn Trait>` for plugin/extension boundaries, but core data
   structures stay monomorphic.
 
+### Hard Blocks (Task prompt enforcement)
+
+The Task prompt's Phase 2 section includes a forbidden-actions list
+("Hard Blocks") that the model is instructed to never violate. These
+mirror the Rust conventions above and extend them to language-agnostic
+anti-patterns. See `prompt_system/task/phase_2_execution.rs` for the
+canonical list and `docs/prompt-system.md` for the full documentation.
+
+### Prompt system
+
+All LLM-facing prompt templates live under
+`prompt_system/` (`crates/opca-core/src/prompt_system/`). Each area
+exposes a `PROMPT_VERSION` constant logged at initialization. The
+phase protocol (0-3), Evidence Gate, 3-strike rule, and Audit judgment
+criteria are all defined here. See `docs/prompt-system.md` for the
+module map, versioning policy, and instructions for adding new sections.
+
 ### Testing
 
 - **TDD is the default.** Red → Green → Refactor.

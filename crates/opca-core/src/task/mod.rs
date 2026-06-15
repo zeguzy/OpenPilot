@@ -9,6 +9,7 @@
 //! + Focus Contract) and §D12 (steering + follow-up dual queues).
 
 pub mod channels;
+pub mod evidence_gate;
 pub mod run;
 #[allow(clippy::module_inception)]
 pub mod task;
@@ -17,5 +18,8 @@ pub use channels::{
     ChannelSet, FollowupMessage, FollowupQueue, HeartbeatRx, HeartbeatTx, HighlightRx, HighlightTx,
     OutputRx, OutputTx, SteeringMessage, SteeringRx, SteeringTx, TaskHandle, TaskOutput,
     create_channels,
+};
+pub use run::{
+    Assessment, AssessmentState, IssueSignature, Phase, RunState, TodoItem, normalize_error_msg,
 };
 pub use task::{Task, TaskOutcome};

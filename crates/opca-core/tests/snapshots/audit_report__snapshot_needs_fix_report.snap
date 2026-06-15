@@ -18,5 +18,6 @@ expression: report
       "issue": "Weak hash algorithm (MD5)"
     }
   ],
-  "summary": "Critical security vulnerabilities detected"
+  "summary": "Critical security vulnerabilities detected",
+  "justification": "Decision tree rule 2: major finding (hardcoded secret) mandates NeedsFix."
 }

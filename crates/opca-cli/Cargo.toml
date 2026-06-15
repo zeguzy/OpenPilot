@@ -27,5 +27,9 @@ opca-test-utils = { workspace = true }
 rstest = { workspace = true }
 tempfile = { workspace = true }
 
+[features]
+default = []
+sub-agents = ["opca-core/sub-agents"]
+
 [lints]
 workspace = true

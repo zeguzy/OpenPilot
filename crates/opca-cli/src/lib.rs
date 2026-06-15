@@ -26,6 +26,18 @@ pub struct TaskInfo {
     pub files_modified: usize,
 }
 
+/// Sub-task info for the `/subtasks` slash command (behind the
+/// `sub-agents` feature).
+#[cfg(feature = "sub-agents")]
+#[derive(Debug, Clone)]
+pub struct SubTaskInfo {
+    pub id: String,
+    pub description: String,
+    pub status: TaskStatus,
+    pub progress: f64,
+    pub summary: String,
+}
+
 impl TaskInfo {
     #[must_use]
     pub fn pending_review(&self) -> bool {
@@ -53,6 +65,19 @@ pub enum Notification {
         status: TaskStatus,
         summary: String,
     },
+    /// A Task has entered `Waiting` and needs user input (D6).
+    ///
+    /// Emitted when the Task calls `request_clarification` or otherwise
+    /// transitions to `Waiting` with a question. The CLI renders a banner
+    /// prompting the user to reply with `/answer <task-id> <response>`.
+    Clarification {
+        task_id: String,
+        question: String,
+        /// Suggested answers the user can pick from (may be empty).
+        options: Vec<String>,
+        /// Seconds before the Orchestrator auto-proceeds with a best guess.
+        timeout_secs: u64,
+    },
 }
 
 #[derive(Debug)]
@@ -74,6 +99,9 @@ pub trait OrchestratorApi: Send + Sync {
     fn task_status(&self, task_id: &str) -> Option<TaskInfo>;
     fn accept(&self, task_id: &str) -> Result<(), String>;
     fn reject(&self, task_id: &str, feedback: Option<&str>) -> Result<(), String>;
+    /// Answers a clarification request from a `Waiting` Task.
+    /// Forwards `choice` as a `SteeringMessage::Inject` and resumes the Task.
+    fn answer_task(&self, task_id: &str, choice: &str) -> Result<(), String>;
     fn pending_review_count(&self) -> usize;
     fn subscribe(&self) -> UnboundedReceiver<Notification>;
     fn stream_foreground(
@@ -103,6 +131,13 @@ pub trait OrchestratorApi: Send + Sync {
     /// Pass `None` for an overview of every active chain, or `Some(id)` for
     /// a single chain's detail.
     fn continuation_status(&self, chain_id: Option<&str>) -> String;
+
+    /// Lists sub-tasks of a parent task (behind the `sub-agents` feature).
+    ///
+    /// Pass `None` for all sub-tasks across all parents, or `Some(id)` for
+    /// a specific parent's children.
+    #[cfg(feature = "sub-agents")]
+    fn list_subtasks(&self, parent_task_id: Option<&str>) -> Vec<SubTaskInfo>;
 }
 
 #[derive(Clone)]
