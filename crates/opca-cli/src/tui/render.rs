@@ -8,6 +8,7 @@ use super::app::{App, AppMode, ChatItem};
 use super::input::InputArea;
 
 const GUTTER: &str = "  ";
+const USER_BAR: &str = "│ ";
 
 pub fn render(frame: &mut Frame, app: &App, input: &InputArea) {
     let area = frame.area();
@@ -57,17 +58,18 @@ fn render_chat(frame: &mut Frame, app: &App, area: Rect) {
 fn render_chat_item(item: &ChatItem, wrap_width: usize) -> Vec<ListItem<'static>> {
     match item {
         ChatItem::UserMessage(msg) => {
+            let bar_style = Style::default().fg(Color::Cyan);
             let lines: Vec<ListItem> = wrap_text(msg, wrap_width)
                 .into_iter()
                 .map(|line| {
                     ListItem::new(Line::from(vec![
-                        Span::raw(GUTTER),
+                        Span::styled(USER_BAR, bar_style),
                         Span::styled(line, user_style()),
                     ]))
                 })
                 .collect();
             if lines.is_empty() {
-                vec![ListItem::new(Line::from(GUTTER))]
+                vec![ListItem::new(Line::from(Span::styled(USER_BAR, bar_style)))]
             } else {
                 lines
             }
@@ -98,15 +100,25 @@ fn render_chat_item(item: &ChatItem, wrap_width: usize) -> Vec<ListItem<'static>
                 ]))
             })
             .collect(),
-        ChatItem::Error(msg) => wrap_text(&format!("error: {msg}"), wrap_width)
-            .into_iter()
-            .map(|line| {
-                ListItem::new(Line::from(vec![
-                    Span::raw(GUTTER),
-                    Span::styled(line, Style::default().fg(Color::Red)),
-                ]))
-            })
-            .collect(),
+        ChatItem::Error(msg) => {
+            let err_style = Style::default().fg(Color::Red);
+            let lines: Vec<ListItem> = wrap_text(msg, wrap_width)
+                .into_iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let prefix = if i == 0 { "✗ " } else { "  " };
+                    ListItem::new(Line::from(vec![
+                        Span::styled(prefix, err_style),
+                        Span::styled(line, err_style),
+                    ]))
+                })
+                .collect();
+            if lines.is_empty() {
+                vec![ListItem::new(Line::from(Span::styled("✗", err_style)))]
+            } else {
+                lines
+            }
+        }
     }
 }
 
