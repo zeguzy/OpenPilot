@@ -40,6 +40,23 @@ impl InputArea {
         }
         pos
     }
+
+    #[must_use]
+    pub fn cursor_row_col(&self) -> (usize, usize) {
+        let (row, col) = self.textarea.cursor();
+        (row, col)
+    }
+
+    #[must_use]
+    pub fn current_line_before_cursor(&self) -> String {
+        let (row, col) = self.textarea.cursor();
+        let lines = self.textarea.lines();
+        if let Some(line) = lines.get(row) {
+            line.chars().take(col).collect()
+        } else {
+            String::new()
+        }
+    }
 }
 
 impl Default for InputArea {

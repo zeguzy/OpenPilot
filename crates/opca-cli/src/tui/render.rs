@@ -326,26 +326,38 @@ fn render_input(frame: &mut Frame, app: &App, input: &InputArea, area: Rect) {
         AppMode::Orchestrator => format!("{GUTTER}> "),
         AppMode::Task { task_id } => format!("{GUTTER}task-{task_id}> "),
     };
-
-    let input_text = input.input();
-    let line = Line::from(vec![
-        Span::styled(
-            prompt,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(input_text),
-        Span::styled("", Style::default()),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
-
     let prefix_len = match &app.mode {
         AppMode::Orchestrator => GUTTER.len() + 2,
         AppMode::Task { task_id } => GUTTER.len() + task_id.len() + 7,
     };
-    let cursor_y = area.y;
-    let cursor_x = area.x + prefix_len as u16 + input.cursor() as u16;
+
+    let input_text = input.input();
+    let input_lines: Vec<&str> = input_text.split('\n').collect();
+    let prompt_style = Style::default()
+        .fg(Color::Cyan)
+        .add_modifier(Modifier::BOLD);
+
+    let mut lines = Vec::with_capacity(input_lines.len());
+    for (i, text) in input_lines.iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(prompt.clone(), prompt_style),
+                Span::raw((*text).to_string()),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(prefix_len)),
+                Span::raw((*text).to_string()),
+            ]));
+        }
+    }
+    frame.render_widget(Paragraph::new(ratatui::text::Text::from(lines)), area);
+
+    let (row, _col) = input.cursor_row_col();
+    let text_before = input.current_line_before_cursor();
+    let text_width = text_display_width(&text_before);
+    let cursor_y = area.y + row as u16;
+    let cursor_x = area.x + prefix_len as u16 + text_width as u16;
     frame.set_cursor_position((cursor_x, cursor_y));
 }
 
