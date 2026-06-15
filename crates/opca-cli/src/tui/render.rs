@@ -35,7 +35,15 @@ fn render_chat(frame: &mut Frame, app: &App, area: Rect) {
     let all_items: Vec<ListItem> = app
         .chat_items
         .iter()
-        .flat_map(|item| render_chat_item(item, wrap_width))
+        .enumerate()
+        .flat_map(|(i, item)| {
+            let mut items = Vec::new();
+            if i > 0 && matches!(item, ChatItem::UserMessage(_)) {
+                items.push(ListItem::new(Line::raw("")));
+            }
+            items.extend(render_chat_item(item, wrap_width));
+            items
+        })
         .collect();
 
     let total = all_items.len();
