@@ -363,6 +363,7 @@ fn repl_renders_completion_notification() {
         task_id: id.clone(),
         description: "refactor Y".to_string(),
         files_modified: 5,
+        summary: String::new(),
     };
     repl.render_notification(&notif);
     let text = buffer.joined();

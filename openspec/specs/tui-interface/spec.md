@@ -188,3 +188,37 @@ Dispatch SHALL only be triggered by poll_stream's StreamEvent::Dispatch handler 
 - **WHEN** LLM output contains OPCA_DISPATCH prefix
 - **THEN** exactly one dispatch occurs (via poll_stream)
 - **AND** exactly one TaskPanel is created
+
+### Requirement: TUI renders thinking content with distinct style
+The TUI SHALL render `ThinkingDelta` stream events as dimmed (dark gray) text with a 💭 prefix, visually distinct from normal assistant text. Thinking content SHALL be preserved when the response transitions to text or dispatch — it SHALL NOT be replaced or removed.
+
+#### Scenario: Thinking displayed during streaming
+- **WHEN** the LLM stream emits ThinkingDelta events
+- **THEN** the TUI renders them as StreamingThinking with dark gray 💭 prefix
+- **AND** they are visually distinct from normal text
+
+#### Scenario: Thinking preserved after text starts
+- **WHEN** ThinkingDelta events are followed by TextDelta events
+- **THEN** the thinking content is finalized as ThinkingText (not deleted)
+- **AND** the text content appears below as a new StreamingAssistant block
+
+#### Scenario: Thinking preserved on dispatch
+- **WHEN** ThinkingDelta events are followed by a Dispatch event
+- **THEN** the thinking content is finalized as ThinkingText before the dispatch replaces the streaming item
+
+### Requirement: Task panel shows description and clean status indicators
+The TaskPanel SHALL display the task description (truncated to 50 chars) in both collapsed and expanded views. Status events SHALL use emoji indicators (🤔 pondering, ⚙️ on-it, ✅ done, 😵 stuck, ⏳ waiting) instead of raw text. The collapsed view SHALL use `▸` (running, yellow) or `✓` (done, green) as the panel icon.
+
+#### Scenario: Collapsed panel shows description and status
+- **WHEN** a task is running and its panel is collapsed
+- **THEN** the display shows `▸ {id} {description...}` with yellow color
+- **AND** no `[/expand]` or `[/collapse]` command hints are shown
+
+#### Scenario: Completed task shows green check
+- **WHEN** a task is done and its panel is collapsed
+- **THEN** the display shows `✓ {id} {description...}` with green color
+
+#### Scenario: Expanded panel shows emoji status events
+- **WHEN** a task panel is expanded
+- **THEN** each heartbeat event is rendered with an emoji prefix (🤔, ⚙️, ✅, etc.)
+- **AND** the raw `|` prefix is not used

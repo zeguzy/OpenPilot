@@ -2,4 +2,4 @@
 source: crates/opca-core/tests/e2e_prompt_system.rs
 expression: v
 ---
-task-v1
+task-v2

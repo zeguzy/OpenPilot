@@ -49,3 +49,19 @@ The Focus Contract SHALL enforce a maximum of 8 dimensions. Adding beyond 8 requ
 #### Scenario: Remove then add within cap
 - **WHEN** Task has 8 dimensions and update_focus(remove=["old dim"], add=["new dim"]) is called
 - **THEN** the update succeeds, resulting in 8 dimensions with "new dim" replacing "old dim"
+
+### Requirement: Project context (AGENTS.md) injected into Task system prompt
+When the Orchestrator dispatches a Task, it SHALL load AGENTS.md from the project root (walking upward, with @import expansion) and inject it into the Task's system prompt under a `## Project Context` section. This gives the Task awareness of coding conventions, build commands, and project architecture without the LLM needing to discover them.
+
+#### Scenario: AGENTS.md found and injected
+- **WHEN** a project has AGENTS.md at its root
+- **THEN** the Task's system prompt includes `## Project Context\n{agents_md_content}`
+- **AND** the Task LLM can reference build commands and conventions from the context
+
+#### Scenario: AGENTS.md with imports expanded
+- **WHEN** AGENTS.md contains `@extra-rules.md`
+- **THEN** the injected content includes the expanded import (extra-rules.md content inlined)
+
+#### Scenario: No AGENTS.md present
+- **WHEN** no AGENTS.md exists in the project or any ancestor directory
+- **THEN** no Project Context section is added to the system prompt

@@ -171,13 +171,20 @@ async fn poll_loop(
             let mut t = tracked.lock().expect("poisoned");
             collect_changes(&mut t, &orch)
         };
-        let mut subs = subscribers.lock().expect("poisoned");
-        for change in changes {
-            subs.retain(|tx| tx.send(change.clone()).is_ok());
+        {
+            let mut subs = subscribers.lock().expect("poisoned");
+            for change in changes {
+                subs.retain(|tx| tx.send(change.clone()).is_ok());
+            }
         }
-        drop(subs);
         check_clarification_timeouts(&inner, &tracked);
-        check_continuations(&inner, &tracked);
+        check_continuations(&inner, &tracked).await;
+        #[cfg(feature = "sub-agents")]
+        {
+            let mut orch = inner.lock().expect("poisoned");
+            let _ = orch.drain_subtask_requests();
+            orch.check_subtask_completions();
+        }
     }
 }
 
@@ -213,11 +220,12 @@ fn collect_changes(tracked: &mut TrackedTasks, orch: &Orchestrator) -> Vec<Notif
             tracked.clarification_sent.remove(&task.id);
             tracked.waiting_since.remove(&task.id);
             if current == TaskStatus::Delivered {
-                let summary = hb.map_or("", |h| h.summary.as_str());
+                let summary = hb.map_or(String::new(), |h| h.summary.clone());
                 out.push(Notification::Completed {
                     task_id: task.id.clone(),
                     description: task.description.clone(),
-                    files_modified: count_files_from_summary(summary),
+                    files_modified: count_files_from_summary(&summary),
+                    summary,
                 });
             } else if let Some(h) = hb {
                 out.push(Notification::StatusChanged {
@@ -296,8 +304,8 @@ fn check_clarification_timeouts(
     }
 }
 
-fn check_continuations(inner: &Arc<Mutex<Orchestrator>>, tracked: &Arc<Mutex<TrackedTasks>>) {
-    let delivered_in_chains: Vec<String> = {
+async fn check_continuations(inner: &Arc<Mutex<Orchestrator>>, tracked: &Arc<Mutex<TrackedTasks>>) {
+    let delivered_tasks: Vec<String> = {
         let orch = inner.lock().expect("poisoned");
         orch.continuation()
             .list_active_chains()
@@ -305,16 +313,35 @@ fn check_continuations(inner: &Arc<Mutex<Orchestrator>>, tracked: &Arc<Mutex<Tra
             .filter_map(|chain| {
                 let tid = chain.current_task_id();
                 match orch.latest_heartbeat(tid) {
-                    Some(hb) if hb.status == TaskStatus::Delivered => Some(tid.to_string()),
+                    Some(hb) if hb.status == TaskStatus::Delivered => {
+                        #[cfg(feature = "sub-agents")]
+                        if orch.task_has_pending_subtasks(tid) {
+                            return None;
+                        }
+                        Some(tid.to_string())
+                    }
                     _ => None,
                 }
             })
             .collect()
     };
 
-    for task_id in delivered_in_chains {
+    for task_id in delivered_tasks {
+        let audit_result = {
+            let orch = inner.lock().expect("poisoned");
+            match tokio::runtime::Handle::try_current() {
+                Ok(h) => {
+                    tokio::task::block_in_place(|| h.block_on(orch.audit_completed_task(&task_id)))
+                }
+                Err(_) => None,
+            }
+        };
+
+        let (verdict, confidence, findings) =
+            audit_result.unwrap_or((opca_core::audit::AuditVerdict::Confirmed, 1.0, Vec::new()));
+
         let mut orch = inner.lock().expect("poisoned");
-        let req = orch.evaluate_continuation(&task_id, None, 0.0, &[]);
+        let req = orch.evaluate_continuation(&task_id, Some(verdict), confidence, &findings);
         if let Some(req) = req {
             let chain_id = req.chain_id.clone();
             let parent = req.parent_task_id.clone();
@@ -534,6 +561,9 @@ impl OrchestratorApi for RealOrchestrator {
                         match event {
                             Ok(ProviderEvent::TextDelta(delta)) => {
                                 let _ = tx.send(crate::tui::app::StreamEvent::Delta(delta));
+                            }
+                            Ok(ProviderEvent::ThinkingDelta(delta)) => {
+                                let _ = tx.send(crate::tui::app::StreamEvent::Thinking(delta));
                             }
                             Ok(ProviderEvent::ToolCallStart { id, name }) => {
                                 pending_tool_calls.insert(

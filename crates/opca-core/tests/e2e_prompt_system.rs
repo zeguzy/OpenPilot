@@ -85,6 +85,7 @@ fn make_ctx(path: PathBuf) -> ToolContext {
         workspace_path: path,
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     }
 }
 

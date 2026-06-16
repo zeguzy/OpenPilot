@@ -259,6 +259,7 @@ impl Repl {
                 task_id,
                 description,
                 files_modified,
+                summary,
             } => {
                 let files_note = if *files_modified > 0 {
                     format!(
@@ -272,6 +273,10 @@ impl Repl {
                 self.output.print_line(&format!(
                     "\u{1F514} Task {task_id} \"{short}\" done{files_note}"
                 ));
+                if !summary.is_empty() {
+                    let preview = shorten(summary, 200);
+                    self.output.print_line(&format!("  → {preview}"));
+                }
             }
             Notification::StatusChanged {
                 task_id,
