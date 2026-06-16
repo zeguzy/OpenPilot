@@ -1,3 +1,5 @@
+#[cfg(feature = "sub-agents")]
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -35,6 +37,10 @@ pub struct Orchestrator {
     prefetch_cache: Arc<Mutex<Vec<OrchestratorEvent>>>,
     task_counter: u64,
     continuation: ContinuationCoordinator,
+    #[cfg(feature = "sub-agents")]
+    subtask_request_queue: Arc<Mutex<Vec<crate::sub_agent::SubTaskRequest>>>,
+    #[cfg(feature = "sub-agents")]
+    subtask_notifications: HashMap<String, crate::sub_agent::dispatch::SubTaskNotificationQueue>,
 }
 
 impl Orchestrator {
@@ -73,6 +79,10 @@ impl Orchestrator {
             prefetch_cache: Arc::new(Mutex::new(Vec::new())),
             task_counter: 0,
             continuation: ContinuationCoordinator::new(Box::new(DefaultContinuationPolicy), 0.5),
+            #[cfg(feature = "sub-agents")]
+            subtask_request_queue: Arc::new(Mutex::new(Vec::new())),
+            #[cfg(feature = "sub-agents")]
+            subtask_notifications: HashMap::new(),
         }
     }
 
@@ -159,6 +169,9 @@ impl Orchestrator {
                 dispatched: false,
                 join_handle: None,
                 parent_task_id,
+                workspace_path: None,
+                #[cfg(feature = "sub-agents")]
+                pending_subtasks: std::collections::HashSet::new(),
             });
             return Ok(task_id);
         }
@@ -167,11 +180,13 @@ impl Orchestrator {
             .workspace_manager
             .create(&self.project_path, &task_id)?;
         let workspace_path = workspace.path().to_path_buf();
+        let ws_path_for_entry = workspace_path.clone();
 
         let tool_ctx = ToolContext {
             workspace_path,
             fs: self.fs.clone(),
             proc: self.proc.clone(),
+            task_id: Some(task_id.clone()),
         };
         let tools = ToolRegistry::new();
 
@@ -185,35 +200,36 @@ impl Orchestrator {
             self.clock.clone(),
         );
 
+        #[cfg(feature = "sub-agents")]
+        {
+            let notif_queue = crate::sub_agent::dispatch::new_notification_queue();
+            self.subtask_notifications
+                .insert(task_id.clone(), notif_queue.clone());
+            task.set_subtask_notification_queue(notif_queue);
+            task.register_dispatch_subtask_tool(self.subtask_request_queue.clone());
+        }
+
+        if let Ok(Some(agents_md)) = crate::extensions::context::load_agents_md(&self.project_path)
+        {
+            task.set_project_context(agents_md);
+        }
+
         let TaskHandle {
             steering_tx,
-            heartbeat_rx: mut task_hb_rx,
-            highlight_rx: mut task_hl_rx,
-            output_rx: mut task_out_rx,
+            heartbeat_rx,
+            highlight_rx,
+            output_rx,
         } = handle;
 
-        let hb_tx = self.heartbeat_tx.clone();
-        let hl_tx = self.highlight_tx.clone();
-        let highlight_task_id = task_id.clone();
-
-        tokio::spawn(async move {
-            while let Some(hb) = task_hb_rx.recv().await {
-                let id = hb.task_id.clone();
-                let _ = hb_tx.send((id, hb));
-            }
-        });
-        tokio::spawn(async move {
-            while let Some(hl) = task_hl_rx.recv().await {
-                let _ = hl_tx.send((highlight_task_id.clone(), hl));
-            }
-        });
-        let out_task_id = task_id.clone();
-        let out_tx = self.output_tx.clone();
-        tokio::spawn(async move {
-            while let Some(out) = task_out_rx.recv().await {
-                let _ = out_tx.send((out_task_id.clone(), out));
-            }
-        });
+        spawn_relay_channels(
+            heartbeat_rx,
+            highlight_rx,
+            output_rx,
+            self.heartbeat_tx.clone(),
+            self.highlight_tx.clone(),
+            self.output_tx.clone(),
+            task_id.clone(),
+        );
 
         let input = description.to_string();
         let join_handle: JoinHandle<TaskOutcome> =
@@ -232,9 +248,225 @@ impl Orchestrator {
             dispatched: true,
             join_handle: Some(join_handle),
             parent_task_id,
+            workspace_path: Some(ws_path_for_entry),
+            #[cfg(feature = "sub-agents")]
+            pending_subtasks: std::collections::HashSet::new(),
         });
 
         Ok(task_id)
+    }
+
+    /// Returns the shared sub-task request queue so that `DispatchSubtaskTool`
+    /// instances (registered on each Task) enqueue into the same collection
+    /// the Orchestrator drains.
+    #[cfg(feature = "sub-agents")]
+    #[must_use]
+    pub fn subtask_request_queue(&self) -> Arc<Mutex<Vec<crate::sub_agent::SubTaskRequest>>> {
+        self.subtask_request_queue.clone()
+    }
+
+    /// Returns `true` if the given task has sub-tasks that haven't
+    /// reached a terminal state yet.
+    #[cfg(feature = "sub-agents")]
+    #[must_use]
+    pub fn task_has_pending_subtasks(&self, task_id: &str) -> bool {
+        self.tasks
+            .get(task_id)
+            .is_some_and(|e| !e.pending_subtasks.is_empty())
+    }
+
+    /// Drains all pending sub-task requests and dispatches each as a child
+    /// Task via `dispatch_task`. For each request:
+    /// 1. Dispatches a child Task with `parent_task_id` set.
+    /// 2. Ensures a `SubTaskNotificationQueue` exists for the parent.
+    /// 3. Records the child ID in the parent's `pending_subtasks` set.
+    ///
+    /// Returns `(parent_id, child_id)` pairs for all dispatched children.
+    #[cfg(feature = "sub-agents")]
+    pub fn drain_subtask_requests(&mut self) -> Vec<(String, String)> {
+        let requests: Vec<crate::sub_agent::SubTaskRequest> = {
+            let mut guard = self
+                .subtask_request_queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *guard)
+        };
+
+        let mut dispatched = Vec::new();
+
+        for req in requests {
+            let parent_id = req.parent_id.clone();
+            tracing::info!(
+                parent = %parent_id,
+                description = %req.description,
+                "Orchestrator draining sub-task request",
+            );
+
+            let child_result = match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    let fut = self.dispatch_task(
+                        &req.description,
+                        req.focus.clone(),
+                        Vec::new(),
+                        Some(parent_id.clone()),
+                    );
+                    tokio::task::block_in_place(|| handle.block_on(fut))
+                }
+                Err(e) => Err(anyhow::anyhow!("no tokio runtime: {e}")),
+            };
+
+            match child_result {
+                Ok(child_id) => {
+                    self.subtask_notifications
+                        .entry(parent_id.clone())
+                        .or_insert_with(crate::sub_agent::dispatch::new_notification_queue);
+
+                    if let Some(entry) = self.tasks.get_mut(&parent_id) {
+                        entry.pending_subtasks.insert(child_id.clone());
+                    }
+
+                    if let Err(e) = self.inject_message(
+                        &parent_id,
+                        Message::user(format!(
+                            "[Sub-task dispatched: {} (id: {child_id})]",
+                            req.description
+                        )),
+                    ) {
+                        tracing::warn!(
+                            "failed to inject subtask dispatch notification for {parent_id}: {e}"
+                        );
+                    }
+
+                    dispatched.push((parent_id, child_id));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        parent = %parent_id,
+                        error = %e,
+                        "failed to dispatch sub-task",
+                    );
+                    if let Err(inject_err) = self.inject_message(
+                        &parent_id,
+                        Message::user(format!(
+                            "[Sub-task '{}' failed to dispatch: {e}]",
+                            req.description
+                        )),
+                    ) {
+                        tracing::warn!(
+                            "failed to inject dispatch error for {parent_id}: {inject_err}"
+                        );
+                    }
+                }
+            }
+        }
+
+        dispatched
+    }
+
+    /// Checks all parent tasks for completed/failed children. For each
+    /// terminal child:
+    /// 1. Constructs a `SubTaskNotification` and pushes it to the parent's
+    ///    notification queue.
+    /// 2. Removes the child from the parent's `pending_subtasks`.
+    /// 3. If the parent is `Waiting`, injects a steering message to wake it.
+    ///
+    /// Returns the count of notifications sent.
+    #[cfg(feature = "sub-agents")]
+    pub fn check_subtask_completions(&mut self) -> usize {
+        let parents: Vec<String> = self
+            .tasks
+            .iter()
+            .filter(|(_, e)| !e.pending_subtasks.is_empty())
+            .map(|(_, e)| e.id.clone())
+            .collect();
+
+        let mut notifications_sent = 0;
+
+        for parent_id in parents {
+            let pending: Vec<String> = match self.tasks.get(&parent_id) {
+                Some(e) => e.pending_subtasks.iter().cloned().collect(),
+                None => continue,
+            };
+
+            let mut completed_ids = Vec::new();
+            let mut messages_to_inject = Vec::new();
+
+            for child_id in &pending {
+                let (notification, inject_text) = match self.tasks.get(child_id) {
+                    Some(child) => match child.status {
+                        TaskStatus::Delivered | TaskStatus::Archived => {
+                            let result = crate::sub_agent::SubTaskResult {
+                                task_id: child_id.clone(),
+                                summary: child
+                                    .latest_heartbeat
+                                    .as_ref()
+                                    .map_or(String::new(), |h| h.summary.clone()),
+                                artifacts: Vec::new(),
+                            };
+                            let inject =
+                                format!("[Sub-task result] {}: {}", child_id, result.summary);
+                            let notif =
+                                crate::sub_agent::dispatch::SubTaskNotification::Completed {
+                                    sub_task_id: child_id.clone(),
+                                    result,
+                                    verdict: crate::sub_agent::dispatch::SubTaskVerdict::Delivered,
+                                };
+                            (Some(notif), inject)
+                        }
+                        TaskStatus::Stuck | TaskStatus::Axed => {
+                            let reason = child
+                                .latest_heartbeat
+                                .as_ref()
+                                .map_or_else(|| "task failed".to_string(), |h| h.summary.clone());
+                            let inject = format!("[Sub-task error] {child_id}: {reason}");
+                            let notif = crate::sub_agent::dispatch::SubTaskNotification::Failed {
+                                sub_task_id: child_id.clone(),
+                                reason: reason.clone(),
+                            };
+                            (Some(notif), inject)
+                        }
+                        _ => continue,
+                    },
+                    None => continue,
+                };
+
+                if let Some(n) = notification {
+                    if let Some(queue) = self.subtask_notifications.get(&parent_id) {
+                        let mut guard = queue
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if guard.len() < 10 {
+                            guard.push(n);
+                        }
+                    }
+                    notifications_sent += 1;
+                    completed_ids.push(child_id.clone());
+                    messages_to_inject.push(inject_text);
+                }
+            }
+
+            if let Some(entry) = self.tasks.get_mut(&parent_id) {
+                for id in &completed_ids {
+                    entry.pending_subtasks.remove(id);
+                }
+            }
+
+            let parent_waiting = self
+                .tasks
+                .get(&parent_id)
+                .is_some_and(|e| e.status == TaskStatus::Waiting);
+
+            if parent_waiting {
+                for msg_text in messages_to_inject {
+                    let msg = Message::user(msg_text);
+                    if let Err(e) = self.inject_message(&parent_id, msg) {
+                        tracing::warn!("failed to inject subtask completion for {parent_id}: {e}");
+                    }
+                }
+            }
+        }
+
+        notifications_sent
     }
 
     /// Returns IDs and statuses of all tasks whose `parent_task_id`
@@ -328,7 +560,7 @@ impl Orchestrator {
         Ok(snapshot
             .iter()
             .filter(|msg| {
-                let text = msg.content.to_ascii_lowercase();
+                let text = msg.text().to_ascii_lowercase();
                 keywords.iter().any(|kw| text.contains(kw))
             })
             .cloned()
@@ -442,6 +674,68 @@ impl Orchestrator {
             audit_findings,
         )
     }
+
+    /// Runs an audit on a completed task and returns the verdict, confidence,
+    /// and findings. Returns `None` if the task doesn't exist or has no
+    /// workspace path (e.g. it was never dispatched).
+    pub async fn audit_completed_task(
+        &self,
+        task_id: &str,
+    ) -> Option<(crate::audit::AuditVerdict, f64, Vec<crate::audit::Finding>)> {
+        let entry = self.tasks.get(task_id)?;
+        let ws_path = entry.workspace_path.as_ref()?;
+        let provider = self.provider.clone();
+        let task_memory = entry.context_snapshot.clone();
+
+        let agent = crate::audit::AuditAgent::new(
+            provider,
+            task_id,
+            ws_path.clone(),
+            crate::workspace::ChangeSet::default(),
+            task_memory,
+            Vec::new(),
+            crate::audit::ModelTier::Cheap,
+        );
+
+        match agent.audit().await {
+            Ok(report) => Some((report.verdict, report.confidence, report.findings)),
+            Err(e) => {
+                tracing::warn!("Audit failed for task {task_id}: {e}");
+                None
+            }
+        }
+    }
+}
+
+/// Spawns three tokio tasks that relay heartbeats, highlights, and outputs
+/// from a Task's channels into the Orchestrator's aggregation channels.
+fn spawn_relay_channels(
+    mut heartbeat_rx: UnboundedReceiver<Heartbeat>,
+    mut highlight_rx: UnboundedReceiver<Highlight>,
+    mut output_rx: UnboundedReceiver<crate::task::TaskOutput>,
+    heartbeat_tx: UnboundedSender<(String, Heartbeat)>,
+    highlight_tx: UnboundedSender<(String, Highlight)>,
+    output_tx: UnboundedSender<(String, crate::task::TaskOutput)>,
+    task_id: String,
+) {
+    tokio::spawn(async move {
+        while let Some(hb) = heartbeat_rx.recv().await {
+            let id = hb.task_id.clone();
+            let _ = heartbeat_tx.send((id, hb));
+        }
+    });
+    let hl_task_id = task_id.clone();
+    tokio::spawn(async move {
+        while let Some(hl) = highlight_rx.recv().await {
+            let _ = highlight_tx.send((hl_task_id.clone(), hl));
+        }
+    });
+    let out_task_id = task_id;
+    tokio::spawn(async move {
+        while let Some(out) = output_rx.recv().await {
+            let _ = output_tx.send((out_task_id.clone(), out));
+        }
+    });
 }
 
 #[allow(clippy::missing_fields_in_debug)]

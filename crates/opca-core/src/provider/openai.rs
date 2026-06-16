@@ -62,16 +62,16 @@ fn build_api_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<
     for m in messages {
         match m.role {
             MessageRole::System => {
-                out.push(json!({ "role": "system", "content": m.content }));
+                out.push(json!({ "role": "system", "content": m.text() }));
             }
             MessageRole::User => {
-                out.push(json!({ "role": "user", "content": m.content }));
+                out.push(json!({ "role": "user", "content": m.text() }));
             }
             MessageRole::Assistant => {
-                let mut msg = json!({ "role": "assistant", "content": m.content });
-                if !m.tool_calls.is_empty() {
+                let mut msg = json!({ "role": "assistant", "content": m.text() });
+                if m.has_tool_calls() {
                     let tool_calls: Vec<Value> = m
-                        .tool_calls
+                        .tool_calls()
                         .iter()
                         .map(|tc| {
                             json!({
@@ -89,11 +89,10 @@ fn build_api_messages(messages: &[Message], system_prompt: Option<&str>) -> Vec<
                 out.push(msg);
             }
             MessageRole::Tool => {
-                let tool_call_id = m.tool_call_id.as_deref().unwrap_or("");
+                let tool_call_id = m.tool_result_info().map_or("", |(id, _)| id);
                 let content = m
-                    .tool_result
-                    .as_ref()
-                    .map_or(m.content.as_str(), |r| r.content.as_str());
+                    .tool_result_info()
+                    .map_or_else(|| m.text(), |(_, r)| r.content.as_str());
                 out.push(json!({
                     "role": "tool",
                     "tool_call_id": tool_call_id,
@@ -230,7 +229,21 @@ impl Provider for OpenAIProvider {
                             };
 
                             if let Some(delta) = choice.get("delta") {
-                                // Text delta.
+                                if let Some(reasoning) =
+                                    delta.get("reasoning_content").and_then(|v| v.as_str())
+                                {
+                                    if !reasoning.is_empty()
+                                        && tx
+                                            .send(Ok(ProviderEvent::ThinkingDelta(
+                                                reasoning.to_string(),
+                                            )))
+                                            .await
+                                            .is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+
                                 if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
                                     if !text.is_empty()
                                         && tx

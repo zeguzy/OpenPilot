@@ -59,6 +59,7 @@ pub enum Notification {
         task_id: String,
         description: String,
         files_modified: usize,
+        summary: String,
     },
     StatusChanged {
         task_id: String,

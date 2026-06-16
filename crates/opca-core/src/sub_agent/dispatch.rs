@@ -265,7 +265,7 @@ impl Tool for DispatchSubtaskTool {
             description: description.clone(),
             focus: focus.clone(),
             workspace_mode: workspace_mode.clone(),
-            parent_id: String::new(),
+            parent_id: ctx.task_id.clone().unwrap_or_default(),
             parent_workspace_path: ctx.workspace_path.clone(),
             delegation_depth: current_depth,
         };
@@ -299,6 +299,7 @@ mod tests {
             workspace_path: PathBuf::from("/workspace"),
             fs: Arc::new(crate::di::StdFileSystem),
             proc: Arc::new(crate::di::StdProcess),
+            task_id: None,
         }
     }
 

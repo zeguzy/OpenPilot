@@ -7,7 +7,8 @@ use crate::focus::{FocusContract, Highlight, build_focus_prompt};
 use crate::lifecycle::{Heartbeat, LifecycleTracker, TaskStatus, TodoSummary};
 use crate::provider::{Message, Provider};
 use crate::tools::builtin::{
-    ClarificationStore, ReportHighlightTool, RequestClarificationTool, TodoStore, TodoWriteTool,
+    BashTool, ClarificationStore, EditTool, FindTool, GrepTool, LsTool, ReadTool,
+    ReportHighlightTool, RequestClarificationTool, TodoStore, TodoWriteTool, WriteTool,
     new_clarification_store,
 };
 use crate::tools::{ToolContext, ToolRegistry};
@@ -43,8 +44,18 @@ pub struct Task {
     pub(super) run_state: RunState,
     pub(super) todo_store: TodoStore,
     pub(super) clarification_store: ClarificationStore,
+    pub(super) project_context: Option<String>,
+    #[cfg(feature = "sub-agents")]
+    pub(super) dispatch_limits: Arc<std::sync::Mutex<crate::sub_agent::DispatchLimits>>,
     #[cfg(feature = "sub-agents")]
     pub(super) delegation_depth: usize,
+    #[cfg(feature = "sub-agents")]
+    pub(super) subtask_notification_queue:
+        Option<crate::sub_agent::dispatch::SubTaskNotificationQueue>,
+    #[cfg(feature = "sub-agents")]
+    pub(super) pending_subtask_count: usize,
+    #[cfg(feature = "sub-agents")]
+    pub(super) waiting_since: Option<std::time::Instant>,
 }
 
 impl Task {
@@ -75,6 +86,19 @@ impl Task {
             clarification_store.clone(),
         )));
 
+        tools.register(Box::new(ReadTool));
+        tools.register(Box::new(WriteTool));
+        tools.register(Box::new(EditTool));
+        tools.register(Box::new(BashTool));
+        tools.register(Box::new(GrepTool));
+        tools.register(Box::new(FindTool));
+        tools.register(Box::new(LsTool));
+
+        #[cfg(feature = "sub-agents")]
+        let dispatch_limits: Arc<std::sync::Mutex<crate::sub_agent::DispatchLimits>> = Arc::new(
+            std::sync::Mutex::new(crate::sub_agent::DispatchLimits::default()),
+        );
+
         let lifecycle = LifecycleTracker::new(id_string.clone(), clock)
             .with_heartbeat_channel(set.heartbeat_tx.clone());
 
@@ -102,8 +126,17 @@ impl Task {
             run_state: RunState::new(),
             todo_store,
             clarification_store,
+            project_context: None,
+            #[cfg(feature = "sub-agents")]
+            dispatch_limits,
             #[cfg(feature = "sub-agents")]
             delegation_depth: 0,
+            #[cfg(feature = "sub-agents")]
+            subtask_notification_queue: None,
+            #[cfg(feature = "sub-agents")]
+            pending_subtask_count: 0,
+            #[cfg(feature = "sub-agents")]
+            waiting_since: None,
         };
         (task, handle)
     }
@@ -118,11 +151,50 @@ impl Task {
         }
     }
 
+    /// Sets project-level context (from AGENTS.md) to be injected into
+    /// the system prompt. This gives the Task awareness of coding
+    /// conventions, build commands, and project architecture.
+    pub fn set_project_context(&mut self, context: String) {
+        self.project_context = Some(context);
+    }
+
     /// Sets the delegation depth for sub-agent chains. Root tasks are
-    /// depth 0; each child increments by 1.
+    /// depth 0; each child increments by 1. Also propagates the depth to
+    /// the `dispatch_subtask` tool's limits so the tool enforces the
+    /// correct ceiling.
     #[cfg(feature = "sub-agents")]
-    pub const fn with_delegation_depth(&mut self, depth: usize) {
+    pub fn with_delegation_depth(&mut self, depth: usize) {
         self.delegation_depth = depth;
+        if let Ok(mut guard) = self.dispatch_limits.lock() {
+            guard.current_depth = depth;
+        }
+    }
+
+    /// Sets the notification queue the Task drains for sub-task completion
+    /// notifications. Called by the Orchestrator after `Task::new()` but
+    /// before spawning.
+    #[cfg(feature = "sub-agents")]
+    pub fn set_subtask_notification_queue(
+        &mut self,
+        queue: crate::sub_agent::dispatch::SubTaskNotificationQueue,
+    ) {
+        self.subtask_notification_queue = Some(queue);
+    }
+
+    /// Registers the `dispatch_subtask` tool using the Orchestrator's shared
+    /// request queue. Called by the Orchestrator after `Task::new()` but
+    /// before spawning. The tool shares the same `Arc<Mutex>` as the
+    /// Orchestrator's `subtask_request_queue`.
+    #[cfg(feature = "sub-agents")]
+    pub fn register_dispatch_subtask_tool(
+        &mut self,
+        request_queue: Arc<std::sync::Mutex<Vec<crate::sub_agent::SubTaskRequest>>>,
+    ) {
+        use crate::sub_agent::DispatchSubtaskTool;
+        self.tools.register(Box::new(DispatchSubtaskTool::new(
+            request_queue,
+            self.dispatch_limits.clone(),
+        )));
     }
 
     /// Returns the delegation depth (0 for root tasks).
@@ -190,11 +262,16 @@ impl Task {
     pub(super) fn build_system_prompt(&self) -> String {
         let base = crate::prompt_system::task::build_task_prompt(self.run_state.current_phase);
         let focus = build_focus_prompt(&self.focus);
-        if focus.is_empty() {
+        let mut prompt = if focus.is_empty() {
             base
         } else {
             format!("{base}\n\n{focus}")
+        };
+        if let Some(ctx) = &self.project_context {
+            prompt.push_str("\n\n## Project Context\n");
+            prompt.push_str(ctx);
         }
+        prompt
     }
 
     pub(super) fn push_output(&self, output: TaskOutput) {
@@ -285,7 +362,18 @@ impl std::fmt::Debug for Task {
                     .unwrap_or(false),
             );
         #[cfg(feature = "sub-agents")]
-        d.field("delegation_depth", &self.delegation_depth);
+        {
+            d.field(
+                "dispatch_limits",
+                &self
+                    .dispatch_limits
+                    .lock()
+                    .map(|l| l.current_depth)
+                    .unwrap_or(0),
+            );
+            d.field("delegation_depth", &self.delegation_depth);
+            d.field("pending_subtask_count", &self.pending_subtask_count);
+        }
         d.finish_non_exhaustive()
     }
 }

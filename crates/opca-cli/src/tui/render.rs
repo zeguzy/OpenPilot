@@ -93,12 +93,32 @@ fn render_chat_item(item: &ChatItem, wrap_width: usize) -> Vec<ListItem<'static>
                 lines
             }
         }
+        ChatItem::ThinkingText(msg) | ChatItem::StreamingThinking(msg) => {
+            let think_style = Style::default().fg(Color::DarkGray);
+            let lines: Vec<ListItem> = wrap_text(msg, wrap_width)
+                .into_iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let prefix = if i == 0 { "  💭 " } else { "    " };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(""),
+                        Span::styled(prefix, think_style),
+                        Span::styled(line, think_style),
+                    ]))
+                })
+                .collect();
+            if lines.is_empty() {
+                vec![ListItem::new(Line::from(Span::styled("  💭", think_style)))]
+            } else {
+                lines
+            }
+        }
         ChatItem::TaskPanel {
             task_id,
+            description,
             events,
             collapsed,
-            ..
-        } => render_task_panel(task_id, events, *collapsed, wrap_width),
+        } => render_task_panel(task_id, description, events, *collapsed, wrap_width),
         ChatItem::SystemMessage(msg) => wrap_text(msg, wrap_width)
             .into_iter()
             .map(|line| {
@@ -132,56 +152,89 @@ fn render_chat_item(item: &ChatItem, wrap_width: usize) -> Vec<ListItem<'static>
 
 fn render_task_panel(
     task_id: &str,
+    description: &str,
     events: &[String],
     collapsed: bool,
     wrap_width: usize,
 ) -> Vec<ListItem<'static>> {
+    let label = task_id.strip_prefix("task-").unwrap_or(task_id);
+    let short_desc: String = description.chars().take(50).collect();
+    let desc_suffix = if description.len() > 50 { "…" } else { "" };
+    let last_raw = events
+        .last()
+        .map_or_else(|| "queued".to_string(), std::clone::Clone::clone);
+
     if collapsed {
-        let last = events
-            .last()
-            .map_or_else(|| "starting".to_string(), std::clone::Clone::clone);
+        let done = last_raw.starts_with("done") || last_raw.starts_with("✓");
+        let icon = if done { "✓" } else { "▸" };
+        let icon_color = if done { Color::Green } else { Color::Yellow };
         vec![ListItem::new(Line::from(vec![
             Span::raw(GUTTER),
             Span::styled(
-                "+ ",
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
+                format!("{icon} "),
+                Style::default().fg(icon_color).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("task-{task_id} "),
+                format!("{label}  "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
-            Span::raw(last),
             Span::styled(
-                format!("  [/expand {task_id}]"),
-                Style::default().fg(Color::DarkGray),
+                format!("{short_desc}{desc_suffix}"),
+                Style::default().fg(Color::Gray),
             ),
         ]))]
     } else {
-        let mut lines = vec![ListItem::new(Line::from(vec![
+        let mut lines = Vec::new();
+
+        lines.push(ListItem::new(Line::from(vec![
             Span::raw(GUTTER),
             Span::styled(
-                "v ",
+                "▾ ",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("task-{task_id}"),
+                format!("{label}  "),
                 Style::default().add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  [/collapse {task_id}]"),
-                Style::default().fg(Color::DarkGray),
+                format!("{short_desc}{desc_suffix}"),
+                Style::default().fg(Color::Gray),
             ),
-        ]))];
+        ])));
+
         for ev in events {
-            for wrapped in wrap_text(ev, wrap_width.saturating_sub(4)) {
-                lines.push(ListItem::new(Line::from(format!("{GUTTER}  | {wrapped}"))));
+            let cleaned = clean_status(ev);
+            for wrapped in wrap_text(&cleaned, wrap_width.saturating_sub(6)) {
+                lines.push(ListItem::new(Line::from(format!("{GUTTER}  {wrapped}"))));
             }
         }
+
         lines
+    }
+}
+
+fn clean_status(raw: &str) -> String {
+    let raw = raw.trim();
+    if let Some(rest) = raw.strip_prefix("pondering — ") {
+        format!("🤔 {rest}")
+    } else if let Some(rest) = raw.strip_prefix("on-it — ") {
+        format!("⚙️  {rest}")
+    } else if let Some(rest) = raw.strip_prefix("done — ") {
+        format!("✅ {rest}")
+    } else if let Some(rest) = raw.strip_prefix("waking — ") {
+        format!("🌅 {rest}")
+    } else if let Some(rest) = raw.strip_prefix("sleeping — ") {
+        format!("💤 {rest}")
+    } else if let Some(rest) = raw.strip_prefix("stuck — ") {
+        format!("😵 {rest}")
+    } else if let Some(rest) = raw.strip_prefix("waiting — ") {
+        format!("⏳ {rest}")
+    } else if raw.starts_with('✓') {
+        raw.to_string()
+    } else {
+        format!("• {raw}")
     }
 }
 

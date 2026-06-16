@@ -18,6 +18,7 @@ fn ctx_from(fs: MockFileSystem, proc: MockProcess) -> ToolContext {
         workspace_path: PathBuf::from("/workspace"),
         fs: Arc::new(fs),
         proc: Arc::new(proc),
+        task_id: None,
     }
 }
 

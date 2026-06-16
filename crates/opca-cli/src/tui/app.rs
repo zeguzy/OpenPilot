@@ -13,6 +13,8 @@ pub enum ChatItem {
     UserMessage(String),
     AssistantText(String),
     StreamingAssistant(String),
+    ThinkingText(String),
+    StreamingThinking(String),
     TaskPanel {
         task_id: String,
         description: String,
@@ -26,6 +28,7 @@ pub enum ChatItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Delta(String),
+    Thinking(String),
     Done,
     Dispatch(String),
     Error(String),
@@ -157,12 +160,38 @@ impl App {
     pub fn poll_stream(&mut self) {
         while let Ok(ev) = self.stream_rx.try_recv() {
             match ev {
+                StreamEvent::Thinking(delta) => {
+                    if let Some(ChatItem::StreamingAssistant(text)) = self.chat_items.last_mut() {
+                        if text.is_empty() {
+                            *self.chat_items.last_mut().unwrap() =
+                                ChatItem::StreamingThinking(String::new());
+                        }
+                    }
+                    match self.chat_items.last_mut() {
+                        Some(ChatItem::StreamingThinking(text)) => {
+                            text.push_str(&delta);
+                        }
+                        _ => {
+                            self.chat_items.push(ChatItem::StreamingThinking(delta));
+                        }
+                    }
+                }
                 StreamEvent::Delta(delta) => {
+                    if let Some(ChatItem::StreamingThinking(text)) = self.chat_items.last_mut() {
+                        let owned = std::mem::take(text);
+                        *self.chat_items.last_mut().unwrap() = ChatItem::ThinkingText(owned);
+                        self.chat_items
+                            .push(ChatItem::StreamingAssistant(String::new()));
+                    }
                     if let Some(ChatItem::StreamingAssistant(text)) = self.chat_items.last_mut() {
                         text.push_str(&delta);
                     }
                 }
                 StreamEvent::Done => {
+                    if let Some(ChatItem::StreamingThinking(text)) = self.chat_items.last_mut() {
+                        let owned = std::mem::take(text);
+                        *self.chat_items.last_mut().unwrap() = ChatItem::ThinkingText(owned);
+                    }
                     if let Some(ChatItem::StreamingAssistant(text)) = self.chat_items.last_mut() {
                         let owned = std::mem::take(text);
                         *self.chat_items.last_mut().unwrap() = ChatItem::AssistantText(owned);
@@ -170,6 +199,11 @@ impl App {
                     self.stop_working();
                 }
                 StreamEvent::Dispatch(description) => {
+                    if let Some(ChatItem::StreamingThinking(text)) = self.chat_items.last_mut() {
+                        let owned = std::mem::take(text);
+                        *self.chat_items.last_mut().unwrap() = ChatItem::ThinkingText(owned);
+                        self.chat_items.push(ChatItem::SystemMessage(String::new()));
+                    }
                     let task_id = self.orchestrator.dispatch(&description);
                     if task_id.starts_with("dispatch-error") {
                         if let Some(last) = self.chat_items.last_mut() {
@@ -189,6 +223,11 @@ impl App {
                     self.stop_working();
                 }
                 StreamEvent::Error(err) => {
+                    if let Some(ChatItem::StreamingThinking(text)) = self.chat_items.last_mut() {
+                        let owned = std::mem::take(text);
+                        *self.chat_items.last_mut().unwrap() = ChatItem::ThinkingText(owned);
+                        self.chat_items.push(ChatItem::Error(String::new()));
+                    }
                     if let Some(last) = self.chat_items.last_mut() {
                         *last = ChatItem::Error(err);
                     }
@@ -204,8 +243,16 @@ impl App {
                 task_id,
                 description,
                 files_modified,
+                summary,
             } => {
-                self.update_task_panel(task_id, &format!("done — {files_modified} files"));
+                let preview: String = if summary.is_empty() {
+                    format!("done — {files_modified} files")
+                } else {
+                    let first_line = summary.lines().next().unwrap_or(summary);
+                    let truncated: String = first_line.chars().take(120).collect();
+                    format!("✓ {truncated}")
+                };
+                self.update_task_panel(task_id, &preview);
                 self.chat_items.push(ChatItem::SystemMessage(format!(
                     "🔔 Task {task_id} \"{description}\" done"
                 )));

@@ -121,6 +121,7 @@ async fn multiple_tool_calls_and_text_in_order() {
             ProviderEvent::ToolCallArgs { .. } => "args",
             ProviderEvent::ToolCallEnd { .. } => "end",
             ProviderEvent::TextDelta(_) => "text",
+            ProviderEvent::ThinkingDelta(_) => "thinking",
             ProviderEvent::Usage { .. } => "usage",
             ProviderEvent::Done { .. } => "done",
             ProviderEvent::Error(_) => "error",

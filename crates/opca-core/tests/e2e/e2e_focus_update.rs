@@ -49,6 +49,7 @@ async fn e2e_focus_update_mid_task() {
         workspace_path: std::path::PathBuf::from("/stub"),
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(opca_test_utils::MockProcess::new()),
+        task_id: None,
     };
     let clock = Arc::new(FakeClock::default()) as Arc<dyn Clock>;
 

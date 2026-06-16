@@ -86,6 +86,7 @@ async fn e2e_git_project_full_lifecycle() {
         workspace_path: workspace.path().to_path_buf(),
         fs: Arc::new(StdFileSystem),
         proc: Arc::new(StdProcess),
+        task_id: None,
     };
     let (mut task, _handle) = Task::new(
         "e2e-git-1",
@@ -99,7 +100,7 @@ async fn e2e_git_project_full_lifecycle() {
 
     let outcome = task.run("add notes").await;
     match outcome {
-        TaskOutcome::Completed(msg) => assert_eq!(msg.content, "done"),
+        TaskOutcome::Completed(msg) => assert_eq!(msg.text(), "done"),
         other => panic!("expected Completed, got {other:?}"),
     }
     assert_eq!(task.lifecycle_current(), TaskStatus::Delivered);

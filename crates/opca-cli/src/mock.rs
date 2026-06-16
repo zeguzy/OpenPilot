@@ -91,6 +91,7 @@ impl MockOrchestrator {
                 task_id: task_id.to_string(),
                 description,
                 files_modified,
+                summary: String::new(),
             };
             broadcast(&mut state, notif);
         }

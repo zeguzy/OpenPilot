@@ -19,6 +19,8 @@ pub type ProviderStream =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderEvent {
     TextDelta(String),
+    /// Incremental extended-thinking (chain-of-thought) content.
+    ThinkingDelta(String),
     ToolCallStart {
         id: String,
         name: String,

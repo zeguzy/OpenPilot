@@ -32,8 +32,8 @@ pub mod lifecycle;
 
 pub use aggregation::{aggregate_subtask_heartbeats, escalate_summary, should_escalate_highlight};
 pub use dispatch::{
-    DispatchSubtaskTool, DispatchSubtaskToolDef, SubTaskRequest, SubTaskResult, SubTaskScope,
-    SubTaskTicket,
+    DispatchLimits, DispatchSubtaskTool, DispatchSubtaskToolDef, SubTaskRequest, SubTaskResult,
+    SubTaskScope, SubTaskTicket,
 };
 pub use lifecycle::{
     SubTaskConfig, initial_phase_for_depth, is_within_depth_limit, is_within_parallel_limit,

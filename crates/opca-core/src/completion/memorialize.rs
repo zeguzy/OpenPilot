@@ -72,14 +72,14 @@ fn build_context_text(active: &[Message], diff: &ChangeSet) -> String {
     use std::fmt::Write;
     let mut text = String::new();
     for m in active {
-        if !m.content.is_empty() {
+        if !m.text().is_empty() {
             let role = match m.role {
                 crate::provider::MessageRole::User => "user",
                 crate::provider::MessageRole::Assistant => "assistant",
                 crate::provider::MessageRole::System => "system",
                 crate::provider::MessageRole::Tool => "tool",
             };
-            let _ = writeln!(text, "{role}: {}", m.content);
+            let _ = writeln!(text, "{role}: {}", m.text());
         }
     }
     let files = files_of(diff);

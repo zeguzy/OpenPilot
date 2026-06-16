@@ -166,3 +166,12 @@ If dispatch fails (e.g., workspace creation error), the error message SHALL be d
 #### Scenario: Workspace creation failure
 - **WHEN** dispatch fails with "not a git repository"
 - **THEN** the TUI shows "dispatch-error: not a git repository"
+
+### Requirement: Notification::Completed carries task output summary
+When a Task reaches Delivered, the Notification::Completed SHALL include a `summary` field containing the Task's final assistant message text (truncated). The TUI and REPL SHALL display this summary so the user can see what the Task produced without expanding the panel.
+
+#### Scenario: Task summary shown in notification
+- **WHEN** Task A completes with final message "I refactored auth into OAuth2..."
+- **THEN** Notification::Completed includes summary: "I refactored auth into OAuth2..."
+- **AND** the TUI TaskPanel shows `✓ I refactored auth into OAuth2...`
+- **AND** the REPL prints `→ I refactored auth into OAuth2...`

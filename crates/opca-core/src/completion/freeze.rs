@@ -72,9 +72,9 @@ async fn generate_summary(provider: &dyn Provider, active: &[Message]) -> String
     if let Some(last) = active
         .iter()
         .rev()
-        .find(|m| m.role == crate::provider::MessageRole::Assistant && !m.content.is_empty())
+        .find(|m| m.role == crate::provider::MessageRole::Assistant && !m.text().is_empty())
     {
-        return last.content.clone();
+        return last.text().to_string();
     }
 
     "Task completed (no summary available)".to_string()
@@ -85,6 +85,7 @@ async fn collect_text(mut stream: crate::provider::ProviderStream) -> Result<Str
     while let Some(event) = stream.next().await {
         match event {
             Ok(ProviderEvent::TextDelta(delta)) => text.push_str(&delta),
+            Ok(ProviderEvent::ThinkingDelta(_)) => {}
             Ok(ProviderEvent::Done { .. }) => break,
             Ok(ProviderEvent::Error(msg)) => anyhow::bail!(msg),
             Ok(_) => {}

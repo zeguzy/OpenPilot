@@ -99,7 +99,7 @@ fn naive_build(
 fn content_checksum(ctx: &ContextRef<'_>) -> u64 {
     let mut h: u64 = 0;
     for m in ctx.messages.iter() {
-        h = h.wrapping_add(m.content.len() as u64);
+        h = h.wrapping_add(m.text().len() as u64);
     }
     for t in ctx.tools.iter() {
         h = h.wrapping_add(t.name.len() as u64);
@@ -111,7 +111,7 @@ fn naive_checksum(ctx: &(String, Vec<Message>, Vec<ToolDef>)) -> u64 {
     let mut h: u64 = 0;
     h = h.wrapping_add(ctx.0.len() as u64);
     for m in &ctx.1 {
-        h = h.wrapping_add(m.content.len() as u64);
+        h = h.wrapping_add(m.text().len() as u64);
     }
     for t in &ctx.2 {
         h = h.wrapping_add(t.name.len() as u64);

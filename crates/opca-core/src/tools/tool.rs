@@ -10,6 +10,10 @@ pub struct ToolContext {
     pub workspace_path: PathBuf,
     pub fs: Arc<dyn FileSystem>,
     pub proc: Arc<dyn Process>,
+    /// The Task ID that owns this context. Used by sub-agent tools
+    /// (behind the `sub-agents` feature) to identify the parent task.
+    /// `None` for orchestrator-level contexts or tests.
+    pub task_id: Option<String>,
 }
 
 #[async_trait::async_trait]

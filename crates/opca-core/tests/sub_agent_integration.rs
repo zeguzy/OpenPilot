@@ -21,6 +21,7 @@ fn dummy_ctx() -> ToolContext {
         workspace_path: PathBuf::from("/workspace"),
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     }
 }
 
@@ -133,8 +134,8 @@ async fn subtask_result_struct_carries_artifacts() {
         "Sub-task {} completed: {}\nArtifacts: {:?}",
         result.task_id, result.summary, result.artifacts
     ));
-    assert!(injection_msg.content.contains("Refactored auth"));
-    assert!(injection_msg.content.contains("src/auth.rs"));
+    assert!(injection_msg.text().contains("Refactored auth"));
+    assert!(injection_msg.text().contains("src/auth.rs"));
 }
 
 // ── 12.9: Depth limit chain: root → child → grandchild → great-grandchild rejected ──
@@ -423,5 +424,162 @@ async fn scripted_subtask_completes_and_result_injected() {
         "Sub-task {} completed: {}",
         result.task_id, result.summary
     ));
-    assert!(injection.content.contains("done"));
+    assert!(injection.text().contains("done"));
+}
+
+// ── Phase 5: New async dispatch flow tests ─────────────────────────────────
+
+#[tokio::test]
+async fn dispatch_subtask_tool_populates_parent_id_from_context() {
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    let limits = Arc::new(Mutex::new(
+        opca_core::sub_agent::dispatch::DispatchLimits::default(),
+    ));
+    let tool = DispatchSubtaskTool::new(queue.clone(), limits);
+
+    let ctx = ToolContext {
+        workspace_path: PathBuf::from("/workspace"),
+        fs: Arc::new(MockFileSystem::new()),
+        proc: Arc::new(MockProcess::new()),
+        task_id: Some("task-42".to_string()),
+    };
+
+    let args = json!({"description": "find unused deps"});
+    tool.execute(&args, &ctx).await.unwrap();
+
+    let guard = queue.lock().unwrap();
+    assert_eq!(guard.len(), 1);
+    assert_eq!(guard[0].parent_id, "task-42");
+}
+
+#[tokio::test]
+async fn dispatch_subtask_tool_parent_id_empty_without_context() {
+    let queue = Arc::new(Mutex::new(Vec::new()));
+    let limits = Arc::new(Mutex::new(
+        opca_core::sub_agent::dispatch::DispatchLimits::default(),
+    ));
+    let tool = DispatchSubtaskTool::new(queue.clone(), limits);
+
+    let ctx = ToolContext {
+        workspace_path: PathBuf::from("/workspace"),
+        fs: Arc::new(MockFileSystem::new()),
+        proc: Arc::new(MockProcess::new()),
+        task_id: None,
+    };
+
+    let args = json!({"description": "test"});
+    tool.execute(&args, &ctx).await.unwrap();
+
+    let guard = queue.lock().unwrap();
+    assert_eq!(guard[0].parent_id, "");
+}
+
+#[tokio::test]
+async fn notification_queue_drain_preserves_order() {
+    use opca_core::sub_agent::dispatch::{
+        SubTaskNotification, SubTaskResult, SubTaskVerdict, new_notification_queue,
+    };
+
+    let queue = new_notification_queue();
+    {
+        let mut g = queue.lock().unwrap();
+        g.push(SubTaskNotification::Completed {
+            sub_task_id: "child-1".to_string(),
+            result: SubTaskResult {
+                task_id: "child-1".to_string(),
+                summary: "first result".to_string(),
+                artifacts: vec![],
+            },
+            verdict: SubTaskVerdict::Delivered,
+        });
+        g.push(SubTaskNotification::Failed {
+            sub_task_id: "child-2".to_string(),
+            reason: "compile error".to_string(),
+        });
+    }
+
+    let drained: Vec<_> = {
+        let mut g = queue.lock().unwrap();
+        std::mem::take(&mut *g)
+    };
+
+    assert_eq!(drained.len(), 2);
+    assert!(matches!(
+        &drained[0],
+        SubTaskNotification::Completed { sub_task_id, .. } if sub_task_id == "child-1"
+    ));
+    assert!(matches!(
+        &drained[1],
+        SubTaskNotification::Failed { sub_task_id, reason } if sub_task_id == "child-2" && reason == "compile error"
+    ));
+
+    assert!(queue.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn notification_queue_cap_at_ten() {
+    use opca_core::sub_agent::dispatch::{SubTaskNotification, new_notification_queue};
+
+    let queue = new_notification_queue();
+    {
+        let mut g = queue.lock().unwrap();
+        for i in 0..15 {
+            if g.len() >= 10 {
+                continue;
+            }
+            g.push(SubTaskNotification::Failed {
+                sub_task_id: format!("child-{i}"),
+                reason: "test".to_string(),
+            });
+        }
+    }
+
+    assert_eq!(queue.lock().unwrap().len(), 10);
+}
+
+#[tokio::test]
+async fn subtask_notification_formats_message_correctly() {
+    use opca_core::sub_agent::dispatch::{SubTaskNotification, SubTaskResult, SubTaskVerdict};
+
+    let notif = SubTaskNotification::Completed {
+        sub_task_id: "task-1-sub".to_string(),
+        result: SubTaskResult {
+            task_id: "task-1-sub".to_string(),
+            summary: "refactored auth module".to_string(),
+            artifacts: vec![PathBuf::from("src/auth.rs")],
+        },
+        verdict: SubTaskVerdict::Delivered,
+    };
+
+    let msg = match &notif {
+        SubTaskNotification::Completed { result, .. } => Message::user(format!(
+            "[Sub-task result] {}: {}",
+            result.task_id, result.summary
+        )),
+        SubTaskNotification::Failed { .. } => unreachable!(),
+    };
+
+    assert!(msg.text().contains("refactored auth module"));
+    assert!(msg.text().contains("[Sub-task result]"));
+}
+
+#[tokio::test]
+async fn subtask_failed_notification_formats_error() {
+    use opca_core::sub_agent::dispatch::SubTaskNotification;
+
+    let notif = SubTaskNotification::Failed {
+        sub_task_id: "task-2-sub".to_string(),
+        reason: "evidence gate failed 3 times".to_string(),
+    };
+
+    let msg = match &notif {
+        SubTaskNotification::Failed {
+            sub_task_id,
+            reason,
+        } => Message::user(format!("[Sub-task error] {sub_task_id}: {reason}")),
+        SubTaskNotification::Completed { .. } => unreachable!(),
+    };
+
+    assert!(msg.text().contains("evidence gate failed"));
+    assert!(msg.text().contains("[Sub-task error]"));
 }

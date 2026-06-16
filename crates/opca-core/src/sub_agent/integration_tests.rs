@@ -28,6 +28,7 @@ fn dummy_ctx() -> ToolContext {
         workspace_path: PathBuf::from("/workspace"),
         fs: Arc::new(crate::di::StdFileSystem),
         proc: Arc::new(crate::di::StdProcess),
+        task_id: None,
     }
 }
 

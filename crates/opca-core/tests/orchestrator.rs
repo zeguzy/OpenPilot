@@ -320,7 +320,7 @@ async fn deep_dive_returns_filtered_messages() {
 
     let results = orch.deep_dive(&task_id, "auth").unwrap();
     assert_eq!(results.len(), 2, "should return messages containing 'auth'");
-    assert!(results.iter().all(|m| m.content.contains("auth")));
+    assert!(results.iter().all(|m| m.text().contains("auth")));
 }
 
 #[tokio::test]

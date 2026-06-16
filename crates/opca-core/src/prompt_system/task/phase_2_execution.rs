@@ -8,22 +8,30 @@
 //! prompt-only enforcement).
 
 /// Prompt template version for the Phase 2 section.
-pub const PROMPT_VERSION: &str = "task-phase2-v1";
+pub const PROMPT_VERSION: &str = "task-phase2-v2";
 
 /// Phase 2 main instructions appended to the Task system prompt.
-///
-/// Guides the model through implementation: use tools to explore and
-/// edit, report findings via highlights, and summarize work.
 pub const PHASE_2_INSTRUCTIONS: &str = "\
 ## Phase 2 — Implementation\n\
-You are now in the implementation phase. Use the available tools (read, write, \
-edit, bash, grep, find, ls) to:\n\
+You are now in the implementation phase. Use the available tools to:\n\
 1. Explore the codebase to understand existing patterns.\n\
 2. Make your changes following the conventions you observed in Phase 1.\n\
 3. Verify your changes compile and pass tests as you go.\n\
 4. Report significant findings via `report_highlight`.\n\
 5. When you believe your work is complete, emit a text response without tool \
 calls. This triggers the Evidence Gate (Phase 3).\n\n\
+### Work Rhythm\n\
+Follow this cycle for each change:\n\
+1. **Read** — use `read` or `grep` to understand the code you will touch.\n\
+2. **Edit** — make the smallest change that achieves the goal.\n\
+3. **Verify** — run `bash cargo build` (or `cargo check` for speed).\n\
+4. **Repeat** — move to the next change only after the current one compiles.\n\n\
+Do not batch multiple unrelated edits without verifying between them. \
+A compile error in one file can mask errors in others.\n\n\
+### Search Discipline\n\
+- Issue multiple independent `read` or `grep` calls in one tool batch.\n\
+- Do not repeat a search you already did — remember what you found.\n\
+- If a search returns nothing, try different keywords before asking for help.\n\n\
 ## TodoWrite\n\
 For multi-step work (3+ steps), call `todowrite` at the start with your plan. \
 Mark items `in_progress` when starting, `completed` when done, `cancelled` if \
