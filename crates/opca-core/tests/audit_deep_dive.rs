@@ -79,7 +79,7 @@ async fn deep_dive_reads_task_reasoning_for_suspicious_diff() {
         "deep dive should find messages about the deletion"
     );
     assert!(
-        context.iter().any(|m| m.content.contains("old_auth.rs")),
+        context.iter().any(|m| m.text().contains("old_auth.rs")),
         "deep dive should find the reasoning about old_auth.rs"
     );
 }
@@ -137,7 +137,7 @@ async fn deep_dive_filters_by_keyword_case_insensitive() {
 
     let context = agent.deep_dive_task_context("auth").await.unwrap();
     assert_eq!(context.len(), 1, "should match case-insensitively");
-    assert!(context[0].content.contains("Auth"));
+    assert!(context[0].text().contains("Auth"));
 }
 
 #[tokio::test]

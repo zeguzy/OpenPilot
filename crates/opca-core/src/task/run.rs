@@ -14,6 +14,10 @@ use super::task::{Task, TaskOutcome};
 
 const MAX_TURNS: u64 = 50;
 
+/// Maximum time (in seconds) a Task waits for sub-tasks before timing out.
+#[cfg(feature = "sub-agents")]
+const SUBTASK_WAIT_TIMEOUT_SECS: u64 = 300;
+
 /// The four phases of a Task's lifecycle.
 ///
 /// See `design.md` §D2 for the hybrid enforcement rationale.
@@ -247,16 +251,42 @@ impl Task {
 
             self.drain_followups();
 
+            #[cfg(feature = "sub-agents")]
+            {
+                self.drain_subtask_notifications();
+
+                if self.lifecycle.current() == TaskStatus::Waiting && self.pending_subtask_count > 0
+                {
+                    if let Some(since) = self.waiting_since {
+                        let elapsed = since.elapsed().as_secs();
+                        if elapsed >= SUBTASK_WAIT_TIMEOUT_SECS {
+                            self.active.push(Message::user(
+                                "[Sub-task timeout] Pending sub-task(s) took too long. Proceeding.",
+                            ));
+                            let _ =
+                                self.lifecycle
+                                    .transition(TaskStatus::OnIt, 0.2, "subtask timeout");
+                            self.waiting_since = None;
+                            self.pending_subtask_count = 0;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    self.turn_count -= 1;
+                    continue;
+                }
+            }
+
             match self.run_turn().await {
                 Ok(TurnVerdict::Continue) => {}
                 Ok(TurnVerdict::Completed(msg)) => {
+                    let summary: String = msg.text().chars().take(200).collect();
                     let _ = self
                         .lifecycle
-                        .transition(TaskStatus::Delivered, 1.0, "delivered");
+                        .transition(TaskStatus::Delivered, 1.0, &summary);
                     self.push_output(TaskOutput::StatusChanged {
                         status: TaskStatus::Delivered,
                         progress: 1.0,
-                        summary: "delivered".to_string(),
+                        summary,
                     });
                     self.push_output(TaskOutput::Done);
                     return TaskOutcome::Completed(msg);
@@ -308,12 +338,15 @@ impl Task {
                 .map_err(|e| e.to_string())?
         };
 
-        let (text, tool_calls, err) = self.collect_stream(stream).await;
+        let (text, thinking, tool_calls, err) = self.collect_stream(stream).await;
         if let Some(err_msg) = err {
             return Err(err_msg);
         }
 
-        let assistant_msg = Message::assistant_with_tools(text.clone(), tool_calls.clone());
+        let mut assistant_msg = Message::assistant_with_tools(text.clone(), tool_calls.clone());
+        if !thinking.is_empty() {
+            assistant_msg.push_thinking(&thinking);
+        }
         self.active.push(assistant_msg);
 
         if self.lifecycle.current() == TaskStatus::Pondering {
@@ -351,6 +384,17 @@ impl Task {
             return Ok(TurnVerdict::Continue);
         }
 
+        #[cfg(feature = "sub-agents")]
+        if self.pending_subtask_count > 0 {
+            let summary = format!("waiting for {} subtask(s)", self.pending_subtask_count);
+            let _ = self
+                .lifecycle
+                .transition(TaskStatus::Waiting, 0.0, &summary);
+            self.push_heartbeat(0.0, &summary);
+            self.waiting_since = Some(std::time::Instant::now());
+            return Ok(TurnVerdict::Continue);
+        }
+
         Ok(TurnVerdict::Completed(Message::assistant(text)))
     }
 
@@ -372,8 +416,28 @@ impl Task {
             self.transition_phase(Phase::Two, "assessment emitted");
         }
 
+        #[cfg(feature = "sub-agents")]
+        let dispatch_ids: Vec<String> = tool_calls
+            .iter()
+            .filter(|tc| tc.name == "dispatch_subtask")
+            .map(|tc| tc.id.clone())
+            .collect();
+        #[cfg(feature = "sub-agents")]
+        let tool_call_count = tool_calls.len();
+
         self.execute_tools(tool_calls).await;
         self.sync_todos();
+
+        #[cfg(feature = "sub-agents")]
+        if !dispatch_ids.is_empty() {
+            let tail_start = self.active.len().saturating_sub(tool_call_count);
+            let new_dispatches = self.active[tail_start..]
+                .iter()
+                .filter_map(|msg| msg.tool_result_info())
+                .filter(|(id, result)| dispatch_ids.iter().any(|d| d == id) && !result.is_error)
+                .count();
+            self.pending_subtask_count += new_dispatches;
+        }
 
         if self.run_state.current_phase == Phase::One {
             self.run_state.tick_phase_turn();
@@ -500,6 +564,44 @@ impl Task {
         }
     }
 
+    #[cfg(feature = "sub-agents")]
+    fn drain_subtask_notifications(&mut self) {
+        let Some(queue) = &self.subtask_notification_queue else {
+            return;
+        };
+        let notifications: Vec<crate::sub_agent::dispatch::SubTaskNotification> = {
+            let mut guard = queue
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *guard)
+        };
+
+        for notif in notifications {
+            match notif {
+                crate::sub_agent::dispatch::SubTaskNotification::Completed {
+                    sub_task_id,
+                    result,
+                    ..
+                } => {
+                    self.active.push(Message::user(format!(
+                        "[Sub-task result] {}: {}",
+                        sub_task_id, result.summary
+                    )));
+                    self.pending_subtask_count = self.pending_subtask_count.saturating_sub(1);
+                }
+                crate::sub_agent::dispatch::SubTaskNotification::Failed {
+                    sub_task_id,
+                    reason,
+                } => {
+                    self.active.push(Message::user(format!(
+                        "[Sub-task error] {sub_task_id}: {reason}"
+                    )));
+                    self.pending_subtask_count = self.pending_subtask_count.saturating_sub(1);
+                }
+            }
+        }
+    }
+
     fn on_turn_complete(&self, text: &str) {
         let summary = if text.is_empty() {
             "turn complete"
@@ -564,8 +666,9 @@ impl Task {
     async fn collect_stream(
         &self,
         mut stream: crate::provider::ProviderStream,
-    ) -> (String, Vec<ToolCall>, Option<String>) {
+    ) -> (String, String, Vec<ToolCall>, Option<String>) {
         let mut text = String::new();
+        let mut thinking = String::new();
         let mut tool_calls: Vec<ToolCall> = Vec::new();
         let mut in_flight: HashMap<String, (String, String)> = HashMap::new();
         let mut err: Option<String> = None;
@@ -575,6 +678,10 @@ impl Task {
                 Ok(ProviderEvent::TextDelta(delta)) => {
                     text.push_str(&delta);
                     self.push_output(TaskOutput::TextDelta(delta));
+                }
+                Ok(ProviderEvent::ThinkingDelta(delta)) => {
+                    thinking.push_str(&delta);
+                    self.push_output(TaskOutput::ThinkingDelta(delta));
                 }
                 Ok(ProviderEvent::ToolCallStart { id, name }) => {
                     in_flight.insert(id, (name, String::new()));
@@ -611,7 +718,7 @@ impl Task {
                 }
             }
         }
-        (text, tool_calls, err)
+        (text, thinking, tool_calls, err)
     }
 }
 

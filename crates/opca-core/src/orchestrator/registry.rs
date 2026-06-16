@@ -36,6 +36,12 @@ pub struct TaskEntry {
     pub dispatched: bool,
     pub join_handle: Option<JoinHandle<TaskOutcome>>,
     pub parent_task_id: Option<String>,
+    pub workspace_path: Option<PathBuf>,
+    /// Child task IDs that haven't reached a terminal state yet.
+    /// Populated by the Orchestrator when dispatching sub-tasks
+    /// (behind the `sub-agents` feature).
+    #[cfg(feature = "sub-agents")]
+    pub pending_subtasks: std::collections::HashSet<String>,
 }
 
 impl TaskEntry {
@@ -177,6 +183,9 @@ mod tests {
             dispatched,
             join_handle: None,
             parent_task_id: None,
+            workspace_path: None,
+            #[cfg(feature = "sub-agents")]
+            pending_subtasks: std::collections::HashSet::new(),
         }
     }
 

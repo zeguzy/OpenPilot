@@ -75,6 +75,13 @@ impl LifecycleTracker {
         &self.task_id
     }
 
+    /// Returns the clock used for heartbeat timestamps. Exposed so a parent
+    /// Task can hand the same clock to a child Task it spawns inline.
+    #[must_use]
+    pub fn clock(&self) -> Arc<dyn Clock> {
+        self.clock.clone()
+    }
+
     pub fn transition(
         &mut self,
         to: TaskStatus,

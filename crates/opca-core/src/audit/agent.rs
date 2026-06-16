@@ -119,7 +119,7 @@ impl AuditAgent {
             if !context.is_empty() {
                 let reasoning = context
                     .iter()
-                    .map(|m| m.content.as_str())
+                    .map(Message::text)
                     .collect::<Vec<_>>()
                     .join("\n");
                 if reasoning_is_flawed(&reasoning) {
@@ -153,7 +153,7 @@ impl AuditAgent {
                     if keywords.is_empty() {
                         true
                     } else {
-                        let content = msg.content.to_lowercase();
+                        let content = msg.text().to_lowercase();
                         keywords.iter().any(|kw| content.contains(kw))
                     }
                 })

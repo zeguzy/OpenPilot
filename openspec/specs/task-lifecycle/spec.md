@@ -36,12 +36,17 @@ If a Task's tokio task panics, the Task state SHALL be set to a terminal error s
 - **AND** Task B's workspace and Memory remain intact for inspection
 
 ### Requirement: Task Waiting state pauses execution
-When a Task needs input from Orchestrator or user, it SHALL transition to Waiting. A steering reply transitions it back to OnIt.
+When a Task needs input from Orchestrator or user, it SHALL transition to Waiting. A steering reply transitions it back to OnIt. When the Task has pending subtasks and no new tool calls, it SHALL also transition to Waiting. A subtask completion notification (injected via steering) transitions it back to OnIt.
 
 #### Scenario: Task waits for clarification
 - **WHEN** Task C encounters an ambiguity it cannot resolve
 - **THEN** it transitions to Waiting and pushes a heartbeat with the question
 - **AND** when Orchestrator sends a steering reply, Task C transitions back to OnIt
+
+#### Scenario: Task waits for subtask
+- **WHEN** Task A has 1 pending subtask and emits a text response without tool calls
+- **THEN** it transitions to Waiting with heartbeat "waiting for 1 subtask(s)"
+- **AND** when the subtask completes and its result is injected via steering, Task A transitions back to OnIt
 ## ADDED Requirements
 
 ### Requirement: Task output channel for real-time streaming
@@ -74,3 +79,36 @@ pub enum TaskOutput {
 #### Scenario: All output types are covered
 - **WHEN** a Task runs through a complete lifecycle
 - **THEN** output_tx receives TextDelta, ToolCall, ToolResult, Highlight, StatusChanged, and Done events
+
+### Requirement: Task registers file and shell tools
+Task::new() SHALL register the following tools into the ToolRegistry: `read`, `write`, `edit`, `bash`, `grep`, `find`, `ls`, `todo_write`, `report_highlight`, `request_clarification`. The `dispatch_subtask` tool SHALL be registered when the `sub-agents` feature is enabled.
+
+#### Scenario: Task has file manipulation tools
+- **WHEN** a Task is created via Task::new()
+- **THEN** the ToolRegistry contains read, write, edit, bash, grep, find, and ls tools
+- **AND** the LLM can call these tools to explore and modify the workspace
+
+#### Scenario: Task has communication tools
+- **WHEN** a Task is created
+- **THEN** the ToolRegistry contains todo_write, report_highlight, and request_clarification
+- **AND** the LLM can track progress, report findings, and ask for clarification
+
+### Requirement: Task Delivered heartbeat carries final output summary
+When a Task transitions to Delivered, the heartbeat summary SHALL contain the first 200 characters of the final assistant message text, not a hardcoded "delivered" string.
+
+#### Scenario: Delivered heartbeat shows real summary
+- **WHEN** Task A completes with final message "I refactored the auth module into OAuth2..."
+- **THEN** the Delivered heartbeat summary starts with "I refactored the auth module..."
+- **AND** the Orchestrator and TUI can display what the Task actually did
+
+### Requirement: Task system prompt includes project context
+When a Task is dispatched, the Orchestrator SHALL load AGENTS.md from the project path and inject it into the Task's system prompt under a `## Project Context` section.
+
+#### Scenario: AGENTS.md injected into system prompt
+- **WHEN** a Task is dispatched in a project with AGENTS.md
+- **THEN** the Task's system prompt contains a `## Project Context` section
+- **AND** the section includes the AGENTS.md content (with @import expansion)
+
+#### Scenario: No AGENTS.md
+- **WHEN** a Task is dispatched in a project without AGENTS.md
+- **THEN** the system prompt does not include a Project Context section

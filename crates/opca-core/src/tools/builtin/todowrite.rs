@@ -168,6 +168,7 @@ mod tests {
             workspace_path: PathBuf::from("."),
             fs: Arc::new(crate::di::StdFileSystem),
             proc: Arc::new(crate::di::StdProcess),
+            task_id: None,
         }
     }
 

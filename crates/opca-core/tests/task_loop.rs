@@ -48,6 +48,7 @@ fn make_tool_ctx(fs: MockFileSystem) -> ToolContext {
         workspace_path: PathBuf::from("/workspace"),
         fs: Arc::new(fs),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     }
 }
 
@@ -109,8 +110,8 @@ async fn single_turn_text_response_completes() {
 
     match outcome {
         TaskOutcome::Completed(msg) => {
-            assert_eq!(msg.content, "hello");
-            assert!(msg.tool_calls.is_empty());
+            assert_eq!(msg.text(), "hello");
+            assert!(msg.tool_calls().is_empty());
         }
         other => panic!("expected Completed, got {other:?}"),
     }
@@ -126,9 +127,9 @@ async fn single_turn_active_messages_contain_exchange() {
     let msgs = task.active_messages();
     assert_eq!(msgs.len(), 2);
     assert_eq!(msgs[0].role, MessageRole::User);
-    assert_eq!(msgs[0].content, "hi");
+    assert_eq!(msgs[0].text(), "hi");
     assert_eq!(msgs[1].role, MessageRole::Assistant);
-    assert_eq!(msgs[1].content, "hello");
+    assert_eq!(msgs[1].text(), "hello");
 }
 
 #[tokio::test]
@@ -171,7 +172,7 @@ async fn multi_turn_tool_call_then_text_completes() {
 
     match outcome {
         TaskOutcome::Completed(msg) => {
-            assert_eq!(msg.content, "file contains X");
+            assert_eq!(msg.text(), "file contains X");
         }
         other => panic!("expected Completed, got {other:?}"),
     }
@@ -214,21 +215,21 @@ async fn multi_turn_active_messages_has_full_exchange() {
     );
 
     assert_eq!(msgs[0].role, MessageRole::User);
-    assert_eq!(msgs[0].content, "read foo.rs");
+    assert_eq!(msgs[0].text(), "read foo.rs");
 
     assert_eq!(msgs[1].role, MessageRole::Assistant);
-    assert_eq!(msgs[1].tool_calls.len(), 1);
-    assert_eq!(msgs[1].tool_calls[0].name, "read");
+    assert_eq!(msgs[1].tool_calls().len(), 1);
+    assert_eq!(msgs[1].tool_calls()[0].name, "read");
 
     assert_eq!(msgs[2].role, MessageRole::Tool);
-    assert!(msgs[2].tool_result.is_some());
-    let result = msgs[2].tool_result.as_ref().unwrap();
+    assert!(msgs[2].tool_result_info().is_some());
+    let result = msgs[2].tool_result_info().map(|(_, r)| r).unwrap();
     assert!(!result.is_error);
     assert!(result.content.contains("file contents here"));
 
     assert_eq!(msgs[3].role, MessageRole::Assistant);
-    assert_eq!(msgs[3].content, "file contains X");
-    assert!(msgs[3].tool_calls.is_empty());
+    assert_eq!(msgs[3].text(), "file contains X");
+    assert!(msgs[3].tool_calls().is_empty());
 }
 
 #[tokio::test]
@@ -298,7 +299,7 @@ async fn steering_inject_message_appears_in_context() {
     let has_injected = task
         .active_messages()
         .iter()
-        .any(|m| m.content == "also check bar.rs");
+        .any(|m| m.text() == "also check bar.rs");
     assert!(
         has_injected,
         "injected steering message should appear in active messages"
@@ -592,7 +593,7 @@ async fn followup_messages_processed_after_turn() {
     let has_followup = task
         .active_messages()
         .iter()
-        .any(|m| m.content == "followup question");
+        .any(|m| m.text() == "followup question");
     assert!(has_followup, "followup message should be in active");
 }
 
@@ -673,6 +674,7 @@ async fn evidence_gate_failure_prevents_delivered() {
         workspace_path: dir.path().to_path_buf(),
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     };
     let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
 
@@ -729,6 +731,7 @@ async fn evidence_gate_pass_allows_delivered() {
         workspace_path: dir.path().to_path_buf(),
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     };
     let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
 
@@ -777,6 +780,7 @@ async fn three_strike_evidence_failure_transitions_to_stuck() {
         workspace_path: dir.path().to_path_buf(),
         fs: Arc::new(MockFileSystem::new()),
         proc: Arc::new(MockProcess::new()),
+        task_id: None,
     };
     let clock = Arc::new(FakeClock::default()) as Arc<dyn opca_core::di::Clock>;
 

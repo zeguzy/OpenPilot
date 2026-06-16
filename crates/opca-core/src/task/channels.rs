@@ -10,6 +10,7 @@ use crate::provider::Message;
 #[derive(Debug, Clone)]
 pub enum TaskOutput {
     TextDelta(String),
+    ThinkingDelta(String),
     ToolCall {
         name: String,
         args: String,
