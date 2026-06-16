@@ -55,14 +55,14 @@ fn content_entry(m: &Message) -> Value {
     match m.role {
         MessageRole::User => json!({
             "role": "user",
-            "parts": [{ "text": m.content }],
+            "parts": [{ "text": m.text() }],
         }),
         MessageRole::Assistant => {
             let mut parts: Vec<Value> = Vec::new();
-            if !m.content.is_empty() {
-                parts.push(json!({ "text": m.content }));
+            if !m.text().is_empty() {
+                parts.push(json!({ "text": m.text() }));
             }
-            for tc in &m.tool_calls {
+            for tc in m.tool_calls() {
                 parts.push(json!({
                     "functionCall": {
                         "name": tc.name,
@@ -73,11 +73,10 @@ fn content_entry(m: &Message) -> Value {
             json!({ "role": "model", "parts": parts })
         }
         MessageRole::Tool => {
-            let name = m.tool_call_id.as_deref().unwrap_or("");
+            let name = m.tool_result_info().map_or("", |(id, _)| id);
             let content = m
-                .tool_result
-                .as_ref()
-                .map_or(m.content.as_str(), |r| r.content.as_str());
+                .tool_result_info()
+                .map_or_else(|| m.text(), |(_, r)| r.content.as_str());
             json!({
                 "role": "user",
                 "parts": [{
@@ -139,8 +138,8 @@ impl Provider for GeminiProvider {
             system_parts.push(sys.to_owned());
         }
         for m in &messages {
-            if m.role == MessageRole::System && !m.content.is_empty() {
-                system_parts.push(m.content.clone());
+            if m.role == MessageRole::System && !m.text().is_empty() {
+                system_parts.push(m.text().to_string());
             }
         }
 

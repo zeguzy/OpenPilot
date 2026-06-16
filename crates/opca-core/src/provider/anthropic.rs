@@ -11,7 +11,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use serde_json::{Value, json};
 
-use super::message::{Message, MessageRole};
+use super::message::{Message, MessagePart, MessageRole};
 use super::provider::{Provider, ProviderEvent, ProviderStream, StopReason};
 use super::tool::ToolDef;
 
@@ -51,40 +51,41 @@ fn build_api_messages(messages: &[Message]) -> Vec<Value> {
 
 fn api_message(m: &Message) -> Value {
     match m.role {
-        MessageRole::Tool => {
-            // Anthropic encodes tool results as user messages with tool_result blocks.
-            let tool_use_id = m.tool_call_id.as_deref().unwrap_or("");
-            let content = m.tool_result.as_ref().map_or("", |r| r.content.as_str());
-            let is_error = m.tool_result.as_ref().is_some_and(|r| r.is_error);
-            json!({
-                "role": "user",
-                "content": [{
-                    "type": "tool_result",
-                    "tool_use_id": tool_use_id,
-                    "content": content,
-                    "is_error": is_error,
-                }]
-            })
-        }
-        MessageRole::User => {
-            if m.tool_result.is_some() {
-                // If somehow a tool_result is attached to a User message, treat like Tool.
-                return api_message_tool_result(m);
+        MessageRole::Tool | MessageRole::User => {
+            if let Some((tool_use_id, result)) = m.tool_result_info() {
+                return json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": result.content,
+                        "is_error": result.is_error,
+                    }]
+                });
             }
-            json!({ "role": "user", "content": m.content })
+            let blocks = text_and_thinking_blocks(m);
+            json!({ "role": "user", "content": blocks })
         }
         MessageRole::Assistant => {
             let mut blocks: Vec<Value> = Vec::new();
-            if !m.content.is_empty() {
-                blocks.push(json!({ "type": "text", "text": m.content }));
-            }
-            for tc in &m.tool_calls {
-                blocks.push(json!({
-                    "type": "tool_use",
-                    "id": tc.id,
-                    "name": tc.name,
-                    "input": tc.arguments,
-                }));
+            for part in &m.parts {
+                match part {
+                    MessagePart::Text(t) if !t.is_empty() => {
+                        blocks.push(json!({ "type": "text", "text": t }));
+                    }
+                    MessagePart::Thinking(t) => {
+                        blocks.push(json!({ "type": "thinking", "thinking": t }));
+                    }
+                    MessagePart::ToolCall(tc) => {
+                        blocks.push(json!({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }));
+                    }
+                    _ => {}
+                }
             }
             json!({ "role": "assistant", "content": blocks })
         }
@@ -94,21 +95,23 @@ fn api_message(m: &Message) -> Value {
     }
 }
 
-fn api_message_tool_result(m: &Message) -> Value {
-    let tool_use_id = m.tool_call_id.as_deref().unwrap_or("");
-    let result = m.tool_result.as_ref().map_or_else(
-        || json!({ "content": m.content, "is_error": false }),
-        |r| json!({ "content": r.content, "is_error": r.is_error }),
-    );
-    json!({
-        "role": "user",
-        "content": [{
-            "type": "tool_result",
-            "tool_use_id": tool_use_id,
-            "content": result["content"],
-            "is_error": result["is_error"],
-        }]
-    })
+fn text_and_thinking_blocks(m: &Message) -> Vec<Value> {
+    let mut blocks: Vec<Value> = Vec::new();
+    for part in &m.parts {
+        match part {
+            MessagePart::Text(t) if !t.is_empty() => {
+                blocks.push(json!({ "type": "text", "text": t }));
+            }
+            MessagePart::Thinking(t) => {
+                blocks.push(json!({ "type": "thinking", "thinking": t }));
+            }
+            _ => {}
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": m.text() }));
+    }
+    blocks
 }
 
 fn build_api_tools(tools: &[ToolDef]) -> Vec<Value> {
@@ -156,8 +159,8 @@ impl Provider for AnthropicProvider {
                 system_parts.push(sys.clone());
             }
             for m in &messages {
-                if m.role == MessageRole::System && !m.content.is_empty() {
-                    system_parts.push(m.content.clone());
+                if m.role == MessageRole::System && !m.text().is_empty() {
+                    system_parts.push(m.text().to_string());
                 }
             }
 
@@ -209,9 +212,11 @@ impl Provider for AnthropicProvider {
                                     let index =
                                         data.get("index").and_then(Value::as_u64).unwrap_or(0);
                                     if let Some(block) = data.get("content_block") {
-                                        if block.get("type").and_then(|v| v.as_str())
-                                            == Some("tool_use")
-                                        {
+                                        let block_type = block
+                                            .get("type")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        if block_type == "tool_use" {
                                             let id = block
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
@@ -250,6 +255,22 @@ impl Provider for AnthropicProvider {
                                                 if !text.is_empty()
                                                     && tx
                                                         .send(Ok(ProviderEvent::TextDelta(
+                                                            text.to_string(),
+                                                        )))
+                                                        .await
+                                                        .is_err()
+                                                {
+                                                    return;
+                                                }
+                                            }
+                                            "thinking_delta" => {
+                                                let text = delta
+                                                    .get("thinking")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("");
+                                                if !text.is_empty()
+                                                    && tx
+                                                        .send(Ok(ProviderEvent::ThinkingDelta(
                                                             text.to_string(),
                                                         )))
                                                         .await

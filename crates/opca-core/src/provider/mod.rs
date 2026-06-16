@@ -13,7 +13,7 @@ pub use anthropic::AnthropicProvider;
 pub use anyhow;
 pub use context::{ContextBuilder, ContextOwned, ContextRef};
 pub use gemini::GeminiProvider;
-pub use message::{Message, MessageRole};
+pub use message::{Message, MessagePart, MessageRole};
 pub use openai::OpenAIProvider;
 pub use presets::{ApiProtocol, PRESETS, ProviderPreset, normalize_chat_completions_url, resolve};
 pub use prompts::{orchestrator_prompt, task_prompt};

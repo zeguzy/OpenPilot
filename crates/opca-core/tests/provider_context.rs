@@ -31,8 +31,8 @@ fn context_builder_accumulates_messages() {
 
     let ctx = builder.build();
     assert_eq!(ctx.messages.len(), 2);
-    assert_eq!(ctx.messages[0].content, "hello");
-    assert_eq!(ctx.messages[1].content, "hi");
+    assert_eq!(ctx.messages[0].text(), "hello");
+    assert_eq!(ctx.messages[1].text(), "hi");
 }
 
 #[test]
@@ -95,17 +95,17 @@ fn context_ref_into_owned_clones_data() {
     let ctx = builder.build();
     let owned = ctx.into_owned();
     assert_eq!(owned.messages.len(), 1);
-    assert_eq!(owned.messages[0].content, "data");
+    assert_eq!(owned.messages[0].text(), "data");
 }
 
 #[test]
 fn message_constructors_set_correct_roles() {
     let u = Message::user("question");
     assert_eq!(u.role, MessageRole::User);
-    assert_eq!(u.content, "question");
-    assert!(u.tool_calls.is_empty());
-    assert!(u.tool_call_id.is_none());
-    assert!(u.tool_result.is_none());
+    assert_eq!(u.text(), "question");
+    assert!(u.tool_calls().is_empty());
+    assert!(u.tool_result_info().is_none());
+    assert!(!u.has_thinking());
 
     let a = Message::assistant("answer");
     assert_eq!(a.role, MessageRole::Assistant);
@@ -121,8 +121,8 @@ fn message_constructors_set_correct_roles() {
         },
     );
     assert_eq!(tr.role, MessageRole::Tool);
-    assert_eq!(tr.tool_call_id.as_deref(), Some("call_1"));
-    assert!(tr.tool_result.is_some());
+    assert_eq!(tr.tool_result_info().map(|(id, _)| id), Some("call_1"));
+    assert!(tr.tool_result_info().is_some());
 }
 
 #[test]
@@ -139,10 +139,10 @@ fn message_assistant_with_tools_carries_calls() {
     );
 
     assert_eq!(msg.role, MessageRole::Assistant);
-    assert_eq!(msg.content, "let me check");
-    assert_eq!(msg.tool_calls.len(), 1);
-    assert_eq!(msg.tool_calls[0].id, "call_42");
-    assert_eq!(msg.tool_calls[0].name, "read");
+    assert_eq!(msg.text(), "let me check");
+    assert_eq!(msg.tool_calls().len(), 1);
+    assert_eq!(msg.tool_calls()[0].id, "call_42");
+    assert_eq!(msg.tool_calls()[0].name, "read");
 }
 
 #[test]

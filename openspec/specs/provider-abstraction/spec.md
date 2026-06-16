@@ -111,3 +111,32 @@ The ProviderEvent enum SHALL include a `Usage { prompt_tokens: u64, completion_t
 #### Scenario: Provider without usage data
 - **WHEN** a provider response has no usage field
 - **THEN** no Usage event is emitted (the TUI simply doesn't update counts)
+
+### Requirement: Message uses multi-part structure
+The Message struct SHALL use a `parts: Vec<MessagePart>` field instead of flat `content`/`tool_calls` fields. Each part SHALL be one of: `Text(String)`, `Thinking(String)`, `ToolCall(ToolCall)`, or `ToolResult { tool_call_id, result }`. Message constructors (`user`, `assistant`, `system`, `tool_result`, `assistant_with_tools`) SHALL build the appropriate parts internally. Accessor methods (`text()`, `all_text()`, `thinking()`, `tool_calls()`, `tool_result_info()`) SHALL provide backward-compatible access patterns.
+
+#### Scenario: Assistant message with thinking
+- **WHEN** an LLM response contains reasoning followed by text
+- **THEN** the Message has two parts: `Thinking("让我分析...")` and `Text("我来实现...")`
+- **AND** `msg.thinking()` returns `Some("让我分析...")`
+- **AND** `msg.text()` returns `"我来实现..."`
+
+#### Scenario: Tool result message
+- **WHEN** a tool result is constructed via `Message::tool_result("call-1", result)`
+- **THEN** the Message has one part: `ToolResult { tool_call_id: "call-1", result }`
+- **AND** `msg.tool_result_info()` returns `Some(("call-1", &result))`
+
+### Requirement: ProviderEvent::ThinkingDelta for reasoning streams
+The ProviderEvent enum SHALL include a `ThinkingDelta(String)` variant. Provider implementations SHALL parse reasoning/thinking content from the LLM stream and emit ThinkingDelta events.
+
+#### Scenario: OpenAI-compatible reasoning_content
+- **WHEN** the OpenAIProvider receives a delta with `reasoning_content: "让我分析..."`
+- **THEN** a `ProviderEvent::ThinkingDelta("让我分析...")` is emitted
+
+#### Scenario: Anthropic thinking_delta
+- **WHEN** the AnthropicProvider receives a `thinking_delta` content block delta
+- **THEN** a `ProviderEvent::ThinkingDelta(thinking_text)` is emitted
+
+#### Scenario: Provider without reasoning support
+- **WHEN** a provider response contains no reasoning/thinking fields
+- **THEN** no ThinkingDelta events are emitted
